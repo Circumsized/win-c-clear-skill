@@ -1,0 +1,406 @@
+{
+  "version": 1,
+  "notes": "Predefined scan whitelist and blacklist for safe cleanup operations. Whitelist: only scan these known-safe directories. Blacklist: system core areas that must never be scanned. Use with -ScanMode fast/standard/deep to control scan depth.",
+  "whitelist": {
+    "description": "Directories that are safe to scan and clean. Only these paths (and their subdirectories) will be scanned when whitelist mode is enabled. Paths use environment variables for portability.",
+    "enabled": true,
+    "entries": [
+      {
+        "id": "user-temp",
+        "name": "User Temp Directories",
+        "paths": ["%TEMP%", "%LOCALAPPDATA%\\Temp", "%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache"],
+        "description": "Standard user temporary files; safe to clean"
+      },
+      {
+        "id": "windows-temp",
+        "name": "Windows Temp Directory",
+        "paths": ["%WinDir%\\Temp"],
+        "description": "System temporary files; requires admin"
+      },
+      {
+        "id": "browser-caches",
+        "name": "Browser Caches (Edge, Chrome, Firefox)",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Cache",
+          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Code Cache",
+          "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\GPUCache",
+          "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cache",
+          "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Code Cache",
+          "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\GPUCache",
+          "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\cache2",
+          "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles\\*\\startupCache"
+        ],
+        "description": "Regenerable browser caches; close browsers first"
+      },
+      {
+        "id": "dev-tool-caches",
+        "name": "Developer Tool Caches",
+        "paths": [
+          "%LOCALAPPDATA%\\uv\\cache",
+          "%LOCALAPPDATA%\\pip\\Cache",
+          "%LOCALAPPDATA%\\npm-cache",
+          "%LOCALAPPDATA%\\Yarn\\Cache",
+          "%LOCALAPPDATA%\\pnpm\\store",
+          "%LOCALAPPDATA%\\go-build",
+          "%LOCALAPPDATA%\\NuGet\\v3-cache",
+          "%USERPROFILE%\\.gradle\\caches",
+          "%USERPROFILE%\\.cargo\\registry\\cache",
+          "%USERPROFILE%\\.cache",
+          "%LOCALAPPDATA%\\ms-playwright",
+          "%USERPROFILE%\\.conda\\pkgs",
+          "%LOCALAPPDATA%\\Microsoft\\VisualStudio\\*\\ComponentModelCache",
+          "%LOCALAPPDATA%\\JetBrains\\*\\caches"
+        ],
+        "description": "Regenerable build/package caches for development tools"
+      },
+      {
+        "id": "ide-caches",
+        "name": "IDE Caches (VS Code, Cursor, Trae)",
+        "paths": [
+          "%APPDATA%\\Code\\Cache",
+          "%APPDATA%\\Code\\CachedData",
+          "%APPDATA%\\Code\\Code Cache",
+          "%APPDATA%\\Code\\GPUCache",
+          "%APPDATA%\\Code\\Crashpad",
+          "%APPDATA%\\Code\\logs",
+          "%APPDATA%\\Cursor\\Cache",
+          "%APPDATA%\\Cursor\\CachedData",
+          "%APPDATA%\\Cursor\\Code Cache",
+          "%APPDATA%\\Cursor\\GPUCache",
+          "%APPDATA%\\Cursor\\logs",
+          "%APPDATA%\\Cursor\\User\\workspaceStorage",
+          "%APPDATA%\\Trae\\Cache",
+          "%APPDATA%\\Trae\\CachedData",
+          "%APPDATA%\\Trae\\Code Cache",
+          "%APPDATA%\\Trae\\GPUCache",
+          "%APPDATA%\\Trae\\logs"
+        ],
+        "description": "Regenerable Electron-based IDE caches"
+      },
+      {
+        "id": "app-caches",
+        "name": "Application Caches (Notion, Discord, Teams, etc.)",
+        "paths": [
+          "%APPDATA%\\Notion\\Cache",
+          "%APPDATA%\\Notion\\Code Cache",
+          "%APPDATA%\\Notion\\GPUCache",
+          "%APPDATA%\\Notion\\Partitions\\notion\\Cache",
+          "%APPDATA%\\Notion\\Partitions\\notion\\Code Cache",
+          "%APPDATA%\\Notion\\Partitions\\notion\\GPUCache",
+          "%APPDATA%\\Notion\\Partitions\\notion\\Service Worker",
+          "%APPDATA%\\Discord\\Cache",
+          "%APPDATA%\\Discord\\Code Cache",
+          "%APPDATA%\\Discord\\GPUCache",
+          "%APPDATA%\\Microsoft\\Teams\\Cache",
+          "%APPDATA%\\Microsoft\\Teams\\Code Cache",
+          "%APPDATA%\\Microsoft\\Teams\\GPUCache",
+          "%APPDATA%\\Microsoft\\Teams\\Service Worker\\CacheStorage"
+        ],
+        "description": "Regenerable Electron app caches; content is server-side"
+      },
+      {
+        "id": "gpu-shader-caches",
+        "name": "GPU Shader Caches (NVIDIA, AMD, DirectX)",
+        "paths": [
+          "%LOCALAPPDATA%\\NVIDIA\\DXCache",
+          "%LOCALAPPDATA%\\NVIDIA\\GLCache",
+          "%LOCALAPPDATA%\\NVIDIA\\ComputeCache",
+          "%LOCALAPPDATA%\\AMD\\DxCache",
+          "%LOCALAPPDATA%\\AMD\\GLCache",
+          "%LOCALAPPDATA%\\D3DSCache"
+        ],
+        "description": "Shader compilation caches; regenerate on next app/game launch"
+      },
+      {
+        "id": "windows-caches",
+        "name": "Windows System Caches (Thumbnails, Icons, Prefetch, Delivery Optimization)",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer",
+          "%LOCALAPPDATA%\\Microsoft\\Windows\\DeliveryOptimization\\Cache",
+          "%WinDir%\\Prefetch",
+          "%WinDir%\\SoftwareDistribution\\Download",
+          "%WinDir%\\SoftwareDistribution\\DeliveryOptimization"
+        ],
+        "description": "Windows system caches; some require admin; Prefetch rebuilds on app launch"
+      },
+      {
+        "id": "windows-logs",
+        "name": "Windows Logs (CBS, DISM, WER, Event Logs via wevtutil)",
+        "paths": [
+          "%WinDir%\\Logs\\CBS",
+          "%WinDir%\\Logs\\DISM",
+          "%LOCALAPPDATA%\\Microsoft\\Windows\\WER",
+          "%ProgramData%\\Microsoft\\Windows\\WER",
+          "%LOCALAPPDATA%\\CrashDumps"
+        ],
+        "description": "System diagnostic logs; safe to remove unless troubleshooting"
+      },
+      {
+        "id": "game-launcher-caches",
+        "name": "Game Launcher Caches (Steam, Epic, Riot)",
+        "paths": [
+          "%LOCALAPPDATA%\\Steam\\logs",
+          "%LOCALAPPDATA%\\Steam\\dumps",
+          "%LOCALAPPDATA%\\Steam\\htmlcache",
+          "%LOCALAPPDATA%\\EpicGamesLauncher\\Saved\\Logs",
+          "%LOCALAPPDATA%\\EpicGamesLauncher\\Saved\\webcache",
+          "%LOCALAPPDATA%\\Riot Games\\Riot Client\\Cache",
+          "%LOCALAPPDATA%\\Riot Games\\Riot Client\\Logs"
+        ],
+        "description": "Game launcher logs and embedded browser caches"
+      },
+      {
+        "id": "ai-ml-caches",
+        "name": "AI/ML Tool Caches (Ollama, LM Studio, HuggingFace)",
+        "paths": [
+          "%LOCALAPPDATA%\\Ollama\\logs",
+          "%APPDATA%\\LM Studio\\Cache",
+          "%APPDATA%\\LM Studio\\Code Cache",
+          "%APPDATA%\\LM Studio\\GPUCache",
+          "%APPDATA%\\LM Studio\\Service Worker\\CacheStorage",
+          "%APPDATA%\\LM Studio\\logs",
+          "%USERPROFILE%\\.cache\\huggingface",
+          "%APPDATA%\\Claude\\Cache",
+          "%APPDATA%\\Claude\\Code Cache",
+          "%APPDATA%\\Claude\\GPUCache",
+          "%APPDATA%\\Claude\\Service Worker\\CacheStorage",
+          "%APPDATA%\\Claude\\logs",
+          "%APPDATA%\\Cherry Studio\\Cache",
+          "%APPDATA%\\Cherry Studio\\Code Cache",
+          "%APPDATA%\\Cherry Studio\\GPUCache",
+          "%APPDATA%\\Cherry Studio\\Service Worker\\CacheStorage",
+          "%APPDATA%\\Cherry Studio\\logs"
+        ],
+        "description": "AI tool logs and Electron caches; model weights are NOT in these paths"
+      },
+      {
+        "id": "media-tool-caches",
+        "name": "Media Creation Tool Caches (OBS, CapCut, Jianying)",
+        "paths": [
+          "%APPDATA%\\obs-studio\\logs",
+          "%APPDATA%\\obs-studio\\crashes",
+          "%LOCALAPPDATA%\\JianyingPro\\User Data\\Cache",
+          "%LOCALAPPDATA%\\JianyingPro\\User Data\\Code Cache",
+          "%LOCALAPPDATA%\\JianyingPro\\User Data\\GPUCache",
+          "%LOCALAPPDATA%\\CapCut\\User Data\\Cache"
+        ],
+        "description": "Media editor caches and logs; projects are not stored here"
+      },
+      {
+        "id": "office-caches",
+        "name": "Office Suite Caches (WPS, Microsoft Office)",
+        "paths": [
+          "%APPDATA%\\kingsoft\\wps\\addons",
+          "%APPDATA%\\kingsoft\\office6\\cache",
+          "%APPDATA%\\kingsoft\\office6\\clscache",
+          "%APPDATA%\\kingsoft\\office6\\multiclipboard",
+          "%APPDATA%\\kingsoft\\wps\\download",
+          "%APPDATA%\\kingsoft\\personalofflinecache",
+          "%APPDATA%\\kingsoft\\offlinelog",
+          "%LOCALAPPDATA%\\Microsoft\\Office\\16.0\\OfficeFileCache"
+        ],
+        "description": "Office temporary caches and addon caches"
+      },
+      {
+        "id": "communication-caches",
+        "name": "Communication App Caches (WeCom, QQ, WeChat, DingTalk)",
+        "paths": [
+          "%APPDATA%\\Tencent\\WXWork\\log",
+          "%APPDATA%\\Tencent\\QQ\\Cache",
+          "%APPDATA%\\Tencent\\QQ\\Logs",
+          "%LOCALAPPDATA%\\WeChat\\Cache",
+          "%LOCALAPPDATA%\\WeChat\\Logs",
+          "%APPDATA%\\DingTalk\\Cache",
+          "%APPDATA%\\DingTalk\\Logs"
+        ],
+        "description": "IM client logs and caches; chat data is server-side"
+      },
+      {
+        "id": "uwp-tempstate",
+        "name": "UWP App TempState (All Store Apps)",
+        "paths": [
+          "%LOCALAPPDATA%\\Packages\\*\\TempState",
+          "%LOCALAPPDATA%\\Packages\\*\\AC\\INetCache"
+        ],
+        "description": "Per-app temporary state for packaged (Store/UWP) apps; apps recreate as needed"
+      },
+      {
+        "id": "docker-desktop-logs",
+        "name": "Docker Desktop Logs",
+        "paths": [
+          "%LOCALAPPDATA%\\Docker\\log"
+        ],
+        "description": "Desktop client logs only; use 'docker system prune' for container cleanup"
+      },
+      {
+        "id": "cloud-sync-logs",
+        "name": "Cloud Sync Logs (OneDrive, Dropbox, Google Drive)",
+        "paths": [
+          "%LOCALAPPDATA%\\Microsoft\\OneDrive\\logs",
+          "%LOCALAPPDATA%\\Dropbox\\logs",
+          "%LOCALAPPDATA%\\Google\\DriveFS\\logs"
+        ],
+        "description": "Sync client logs; sync content unaffected"
+      },
+      {
+        "id": "recycle-bin",
+        "name": "Recycle Bin",
+        "paths": [],
+        "special": true,
+        "description": "Native Clear-RecycleBin cmdlet; permanently empties Recycle Bin"
+      }
+    ]
+  },
+  "blacklist": {
+    "description": "System core areas that must NEVER be scanned or cleaned. Patterns are REGEX matched against the lowercased absolute path (engine GuardPatterns style, path-segment form so they match both normalized and absolute paths). Any rule matching these paths is filtered out at scan time AND demoted to dangerous+disabled during merge. The engine additionally unions its own deletion-point GuardPatterns with this list (defense in depth).",
+    "enabled": true,
+    "entries": [
+      {
+        "id": "winsxs",
+        "name": "WinSxS Component Store",
+        "patterns": ["\\\\winsxs($|\\\\)"],
+        "reason": "Windows component store; only safe cleanup is DISM StartComponentCleanup (advisory only)"
+      },
+      {
+        "id": "system32-config",
+        "name": "System32 Config (Registry Hives)",
+        "patterns": ["\\\\system32\\\\config($|\\\\)"],
+        "reason": "Registry hives (SAM/SYSTEM/SOFTWARE/SECURITY); deletion corrupts OS"
+      },
+      {
+        "id": "drivers",
+        "name": "System Drivers & Driver Store",
+        "patterns": ["\\\\system32\\\\drivers($|\\\\)", "\\\\driverstore($|\\\\)"],
+        "reason": "Kernel drivers and driver repository; deletion breaks hardware support"
+      },
+      {
+        "id": "windows-installer",
+        "name": "Windows Installer Cache",
+        "patterns": ["\\\\windows\\\\installer($|\\\\)"],
+        "reason": "MSI package cache; deletion prevents uninstall/repair of installed apps"
+      },
+      {
+        "id": "gac",
+        "name": "Global Assembly Cache (GAC)",
+        "patterns": ["\\\\assembly($|\\\\)"],
+        "reason": "Shared .NET assemblies; deletion breaks .NET applications"
+      },
+      {
+        "id": "system-core-dirs",
+        "name": "Windows Core System Directories",
+        "patterns": ["^[a-z]:\\\\windows$", "^[a-z]:\\\\windows\\\\system32$", "^[a-z]:\\\\windows\\\\syswow64$"],
+        "reason": "Core OS directories; direct deletion destroys the operating system"
+      },
+      {
+        "id": "pagefile-hiberfil",
+        "name": "Pagefile, Swapfile, Hiberfil",
+        "patterns": ["pagefile\\.sys$", "swapfile\\.sys$", "hiberfil\\.sys$", "dumpstack\\.log\\.tmp$"],
+        "reason": "Memory management files; direct deletion causes system crash/corruption"
+      },
+      {
+        "id": "user-registry",
+        "name": "User Registry Hives",
+        "patterns": ["ntuser\\.dat", "usrclass\\.dat"],
+        "reason": "User registry hives; deletion destroys user profile"
+      },
+      {
+        "id": "boot-files",
+        "name": "Boot Files & BCD",
+        "patterns": ["^[a-z]:\\\\boot$", "\\\\boot\\\\bcd", "\\\\bootmgr$"],
+        "reason": "Boot configuration data; deletion makes system unbootable"
+      },
+      {
+        "id": "core-exes",
+        "name": "Core System Executables",
+        "patterns": ["\\\\explorer\\.exe$", "\\\\regedit\\.exe$"],
+        "reason": "Critical system binaries; deletion breaks OS functionality"
+      },
+      {
+        "id": "event-logs",
+        "name": "Event Log Files (.evtx)",
+        "patterns": ["\\\\system32\\\\winevt($|\\\\)", "\\.evtx$"],
+        "reason": "Event log files; must use wevtutil to clear, never delete .evtx directly"
+      },
+      {
+        "id": "windows-old",
+        "name": "Windows.old (Previous Installation)",
+        "patterns": ["\\\\windows\\.old($|\\\\)"],
+        "reason": "Previous Windows installation; deletion prevents rollback. Use Disk Cleanup (cleanmgr) instead"
+      },
+      {
+        "id": "program-files",
+        "name": "Program Files (Application Binaries)",
+        "patterns": ["\\\\program files($|\\\\)", "\\\\program files \\(x86\\)($|\\\\)"],
+        "reason": "Installed application binaries; deletion breaks installed software"
+      },
+      {
+        "id": "system32-dlls",
+        "name": "System32 DLLs & Critical Libraries",
+        "patterns": ["\\\\system32\\\\[^\\\\]+\\.(dll|exe|sys|drv)$"],
+        "reason": "Critical system libraries; deletion causes system instability"
+      },
+      {
+        "id": "drivers-etc",
+        "name": "Driver Configuration",
+        "patterns": ["\\\\windows\\\\inf($|\\\\)"],
+        "reason": "Driver INF files; deletion breaks driver installation/management"
+      },
+      {
+        "id": "wbem-repository",
+        "name": "WMI Repository",
+        "patterns": ["\\\\wbem\\\\repository($|\\\\)"],
+        "reason": "WMI repository; corruption breaks system management"
+      },
+      {
+        "id": "servicing",
+        "name": "Windows Servicing Stack",
+        "patterns": ["\\\\windows\\\\servicing($|\\\\)"],
+        "reason": "Servicing stack for updates; deletion breaks Windows Update"
+      },
+      {
+        "id": "recovery",
+        "name": "Windows Recovery Environment",
+        "patterns": ["^[a-z]:\\\\recovery($|\\\\)"],
+        "reason": "Recovery partition/environment; deletion breaks system recovery"
+      },
+      {
+        "id": "efi-system",
+        "name": "EFI System Partition",
+        "patterns": ["^[a-z]:\\\\efi($|\\\\)", "^\\\\\\\\\\?\\\\volume\\{"],
+        "reason": "UEFI boot partition; deletion makes system unbootable"
+      }
+    ]
+  },
+  "scanModes": {
+    "description": "Scan mode configurations that control how aggressively the whitelist/blacklist is applied",
+    "fast": {
+      "description": "Quick scan - only whitelist directories, no deep recursion",
+      "useWhitelist": true,
+      "maxDepth": 1,
+      "followJunctions": false,
+      "skipBlacklist": true
+    },
+    "standard": {
+      "description": "Standard scan - whitelist directories with moderate recursion",
+      "useWhitelist": true,
+      "maxDepth": 3,
+      "followJunctions": false,
+      "skipBlacklist": true
+    },
+    "deep": {
+      "description": "Deep scan - full whitelist recursion with blacklist enforcement",
+      "useWhitelist": true,
+      "maxDepth": -1,
+      "followJunctions": false,
+      "skipBlacklist": true
+    },
+    "diagnostic": {
+      "description": "Diagnostic scan - scan all but report blacklist hits (for audit)",
+      "useWhitelist": false,
+      "maxDepth": -1,
+      "followJunctions": true,
+      "skipBlacklist": false,
+      "reportBlacklistHits": true
+    }
+  }
+}

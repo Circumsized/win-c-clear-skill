@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新推送自动取消过期的旧运行,节省 runner 时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Verify on Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+
+      - name: Static analysis (PSScriptAnalyzer, errors block / warnings report)
+        shell: pwsh
+        run: |
+          $results = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error
+          if ($results) {
+            $results | Format-Table -AutoSize | Out-String | Write-Host
+            Write-Error ("PSScriptAnalyzer found {0} error(s)" -f $results.Count)
+            exit 1
+          }
+          Write-Host 'PSScriptAnalyzer: 0 errors'
+
+      - name: PowerShell syntax + C# scanner compile + blacklist regexes
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify-engine.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Whitelist/blacklist semantics (Python)
+        shell: pwsh
+        run: |
+          python tools\test-scan-lists.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Safety suite (guardrails, tiers, contracts, unknown-id regression)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify_safety.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: SKILL.md frontmatter sanity (Agent Skills spec)
+        shell: pwsh
+        run: |
+          $c = Get-Content SKILL.md -Raw -Encoding UTF8
+          if ($c -notmatch '(?s)^---\r?\n(.*?)\r?\n---') { Write-Error 'missing frontmatter'; exit 1 }
+          $fm = $Matches[1]
+          if ($fm -notmatch '(?m)^name:\s*win-c-clear-skill\s*$') { Write-Error 'bad name field'; exit 1 }
+          if ($fm -notmatch '(?m)^description:') { Write-Error 'missing description'; exit 1 }
+          if ($fm.Length -gt 2048) { Write-Error ('frontmatter too long: ' + $fm.Length); exit 1 }
+          Write-Host ('frontmatter OK ({0} chars)' -f $fm.Length)
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-logs-${{ github.run_id }}
+          path: |
+            logs/
+            reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  release:
+    name: Package release artifact
+    runs-on: windows-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build portable zip (exclude generated/runtime files)
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'win-c-clear-skill'
+          Copy-Item . $stage -Recurse -Force
+          # 剔除运行时生成物与开发目录,保持发布包干净
+          foreach ($p in @('logs','reports','quarantine','backups','tools\_cache')) {
+            Remove-Item (Join-Path $stage $p) -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          Get-ChildItem $stage -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+          Get-ChildItem $stage -Filter '*.pyc' -Recurse | Remove-Item -Force
+          $zip = Join-Path $env:RUNNER_TEMP 'win-c-clear-skill.zip'
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          Write-Host ("artifact: {0} ({1:N0} bytes)" -f $zip, (Get-Item $zip).Length)
+          "ZIP_PATH=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Attach zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_PATH }}
+          generate_release_notes: true

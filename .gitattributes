@@ -1,0 +1,26 @@
+# Normalize line endings: text files to LF in the repo, per-OS on checkout.
+* text=auto
+
+# Windows scripts stay CRLF so cmd.exe / PowerShell behave consistently everywhere.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+# Declared text to keep LF canonical in the repository.
+*.cs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+LICENSE text eol=lf
+
+# Binary files are never line-ending normalized.
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.zip binary

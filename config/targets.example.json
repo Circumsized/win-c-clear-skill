@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "drive": "C",
+  "notes": "Template for win-c-clear-skill whitelist. Copy to targets.json and edit per machine. Paths MUST use environment variables (%LOCALAPPDATA%/%APPDATA%/%USERPROFILE%/%TEMP%/%ProgramData%/%WinDir%/%ProgramFiles%/%SystemDrive%) so the skill works across PCs and users.",
+  "mergeSources": [
+    "..\\assets\\rules"
+  ],
+  "targets": [
+    {
+      "id": "example-safe-cache",
+      "name": "Example regenerable cache",
+      "enabled": true,
+      "tier": "safe",
+      "requiresAdmin": false,
+      "type": "dir",
+      "paths": ["%LOCALAPPDATA%\\ExampleApp\\Cache"],
+      "preCommands": [],
+      "stopProcesses": [],
+      "stopServices": [],
+      "risk": "Regenerable cache; one confirmation after scan is enough."
+    },
+    {
+      "id": "example-caution-download",
+      "name": "Example download/package cache",
+      "enabled": true,
+      "tier": "caution",
+      "requiresAdmin": false,
+      "type": "dir",
+      "paths": ["%LOCALAPPDATA%\\ExampleApp\\download"],
+      "preCommands": [],
+      "stopProcesses": [],
+      "stopServices": [],
+      "risk": "May affect repair/updates; user must name this id explicitly."
+    },
+    {
+      "id": "example-dangerous-backup",
+      "name": "Example user data backup",
+      "enabled": false,
+      "tier": "dangerous",
+      "requiresAdmin": false,
+      "type": "dir",
+      "paths": ["%APPDATA%\\ExampleApp\\backup"],
+      "preCommands": [],
+      "stopProcesses": [],
+      "stopServices": [],
+      "risk": "May lose user data. enabled:false by default; requires the two-phase confirmation protocol in reference.md."
+    }
+  ]
+}

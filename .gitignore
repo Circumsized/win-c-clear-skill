@@ -1,0 +1,28 @@
+# Generated artifacts (regenerated at runtime)
+config/targets.merged.json
+config/user-overrides.json
+config/scan-cache.json
+
+# Runtime output (audit logs / quarantine / dangerous-tier backups — portable, machine-local)
+logs/
+quarantine/
+backups/
+reports/
+config/last-scan.json
+
+# Rule refresh cache (upstream raws fetched by tools/fetch_rules.py)
+tools/_cache/
+
+# Logs
+*.log
+*.txt.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

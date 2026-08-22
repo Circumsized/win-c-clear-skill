@@ -1,0 +1,78 @@
+# AI 软件（ai）规则集
+
+> 本地大模型运行时与 AI 客户端的日志 / Electron 缓存（模型权重不在此处）。
+
+| 名称 | 路径 | 类型 | 评级 | 需管理员 | 说明 |
+|------|------|------|------|---------|------|
+| Antigravity 模型缓存 | `%USERPROFILE%\.gemini\antigravity-browser-profile\optimization_guide_model_store` | dir | 🔴 dangerous (危险) |  | Antigravity 优化建议模型文件，可重新下载 |
+| Claude Code IDE 锁文件 | `%USERPROFILE%\.claude\ide` | glob | 🔴 dangerous (危险) |  | Claude Code 与编辑器通信的端口锁文件，退出后常有残留 |
+| Claude Code shell 快照 | `%USERPROFILE%\.claude\shell-snapshots` | dir | 🔴 dangerous (危险) |  | Claude Code 每次会话生成的 shell 环境快照，可自动重建 |
+| Claude Code 配置备份 | `%USERPROFILE%\.claude\backups` | glob | 🔴 dangerous (危险) |  | Claude Code 自动生成的 .claude.json 历史备份 |
+| Codex 归档会话 | `%USERPROFILE%\.codex\archived_sessions` | glob | 🔴 dangerous (危险) |  | Codex CLI 已归档的会话记录，清理后这些历史无法再恢复 |
+| opencode 工作区快照 | `%USERPROFILE%\.local\share\opencode\snapshot` | dir | 🔴 dangerous (危险) |  | opencode 用于回滚改动的工作区快照，清理后历史会话无法回滚 |
+| Antigravity GPU 缓存 | `%USERPROFILE%\.gemini\antigravity-browser-profile\Default\GPUCache` | dir | 🟢 safe (安全) |  | Antigravity 内置浏览器的图形渲染缓存 |
+| Antigravity IDE GPU 缓存 | `%APPDATA%\Antigravity IDE\GPUCache` | dir | 🟢 safe (安全) |  | Antigravity IDE 图形渲染缓存 |
+| Antigravity IDE 代码缓存 | `%APPDATA%\Antigravity IDE\Code Cache` | dir | 🟢 safe (安全) |  | Antigravity IDE 前端脚本缓存 |
+| Antigravity IDE 崩溃报告 | `%APPDATA%\Antigravity IDE\Crashpad\reports` | dir | 🟢 safe (安全) |  | Antigravity IDE 崩溃转储报告 |
+| Antigravity IDE 缓存 | `%APPDATA%\Antigravity IDE\Cache` | dir | 🟢 safe (安全) |  | Antigravity IDE 普通缓存 |
+| Antigravity Service Worker | `%USERPROFILE%\.gemini\antigravity-browser-profile\Default\Service Worker\ScriptCache` | dir | 🟢 safe (安全) |  | Antigravity 内置浏览器的 Service Worker 脚本缓存 |
+| Antigravity 代码缓存 | `%USERPROFILE%\.gemini\antigravity-browser-profile\Default\Code Cache` | dir | 🟢 safe (安全) |  | Antigravity 内置浏览器的前端脚本缓存 |
+| Antigravity 组件缓存 | `%USERPROFILE%\.gemini\antigravity-browser-profile\component_crx_cache` | dir | 🟢 safe (安全) |  | Antigravity 下载的浏览器组件缓存，可重新下载 |
+| Antigravity 网页缓存 | `%USERPROFILE%\.gemini\antigravity-browser-profile\Default\Cache` | dir | 🟢 safe (安全) |  | Antigravity 内置浏览器的网页缓存 |
+| Cherry Studio GPU 缓存 | `%APPDATA%\CherryStudio\GPUCache` | dir | 🟢 safe (安全) |  | Cherry Studio 图形渲染缓存 |
+| Cherry Studio 代码缓存 | `%APPDATA%\CherryStudio\Code Cache` | dir | 🟢 safe (安全) |  | Cherry Studio 前端脚本缓存 |
+| Cherry Studio 崩溃报告 | `%APPDATA%\CherryStudio\Crashpad\reports` | dir | 🟢 safe (安全) |  | Cherry Studio 崩溃转储报告 |
+| Cherry Studio 日志 | `%APPDATA%\CherryStudio\logs` | dir | 🟢 safe (安全) |  | Cherry Studio 运行日志 |
+| Cherry Studio 缓存 | `%APPDATA%\CherryStudio\Cache` | dir | 🟢 safe (安全) |  | Cherry Studio 普通缓存 |
+| Claude Code 遥测缓存 | `%USERPROFILE%\.claude\telemetry` | dir | 🟢 safe (安全) |  | Claude Code 上报失败后暂存的遥测事件 |
+| Claude Desktop GPU 缓存 | `%APPDATA%\Claude\GPUCache` | dir | 🟢 safe (安全) |  | Claude Desktop 图形渲染缓存 |
+| Claude Desktop Service Worker | `%APPDATA%\Claude\Service Worker\CacheStorage` | dir | 🟢 safe (安全) |  | Claude Desktop Service Worker 缓存 |
+| Claude Desktop 代码缓存 | `%APPDATA%\Claude\Code Cache` | dir | 🟢 safe (安全) |  | Claude Desktop 前端脚本缓存 |
+| Claude Desktop 日志 | `%APPDATA%\Claude\logs` | dir | 🟢 safe (安全) |  | Claude Desktop 运行日志 |
+| Claude Desktop 缓存 | `%APPDATA%\Claude\Cache` | dir | 🟢 safe (安全) |  | Claude Desktop 普通缓存 |
+| Codex 插件缓存 | `%USERPROFILE%\.codex\plugins\cache` | dir | 🟢 safe (安全) |  | Codex CLI 下载的插件与模板缓存，可重新下载 |
+| Devin GPU 缓存 | `%APPDATA%\Devin\GPUCache` | dir | 🟢 safe (安全) |  | Devin 桌面端图形渲染缓存 |
+| Devin 代码缓存 | `%APPDATA%\Devin\Code Cache` | dir | 🟢 safe (安全) |  | Devin 桌面端前端脚本缓存 |
+| Devin 崩溃报告 | `%APPDATA%\Devin\Crashpad\reports` | dir | 🟢 safe (安全) |  | Devin 桌面端崩溃转储报告 |
+| Devin 缓存 | `%APPDATA%\Devin\Cache` | dir | 🟢 safe (安全) |  | Devin 桌面端普通缓存 |
+| Jan GPU 缓存 | `%APPDATA%\Jan\GPUCache` | dir | 🟢 safe (安全) |  | Jan 图形渲染缓存 |
+| Jan Service Worker | `%APPDATA%\Jan\Service Worker\CacheStorage` | dir | 🟢 safe (安全) |  | Jan Service Worker 缓存 |
+| Jan 代码缓存 | `%APPDATA%\Jan\Code Cache` | dir | 🟢 safe (安全) |  | Jan 前端脚本缓存 |
+| Jan 日志 | `%APPDATA%\Jan\logs` | dir | 🟢 safe (安全) |  | Jan 运行日志 |
+| Jan 缓存 | `%APPDATA%\Jan\Cache` | dir | 🟢 safe (安全) |  | Jan 普通缓存 |
+| JoyCode GPU 缓存 | `%APPDATA%\JoyCode\GPUCache` | dir | 🟢 safe (安全) |  | JoyCode 图形渲染缓存 |
+| JoyCode Service Worker | `%APPDATA%\JoyCode\Service Worker\ScriptCache` | dir | 🟢 safe (安全) |  | JoyCode Service Worker 脚本缓存 |
+| JoyCode 代码缓存 | `%APPDATA%\JoyCode\Code Cache` | dir | 🟢 safe (安全) |  | JoyCode 前端脚本缓存 |
+| JoyCode 缓存 | `%APPDATA%\JoyCode\Cache` | dir | 🟢 safe (安全) |  | JoyCode 普通缓存 |
+| Kimi 桌面版 GPU 缓存 | `%APPDATA%\kimi-desktop\GPUCache` | dir | 🟢 safe (安全) |  | Kimi 桌面版图形渲染缓存 |
+| Kimi 桌面版代码缓存 | `%APPDATA%\kimi-desktop\Code Cache` | dir | 🟢 safe (安全) |  | Kimi 桌面版前端脚本缓存 |
+| Kimi 桌面版崩溃报告 | `%APPDATA%\kimi-desktop\Crashpad\reports` | dir | 🟢 safe (安全) |  | Kimi 桌面版崩溃转储报告 |
+| Kimi 桌面版日志 | `%APPDATA%\kimi-desktop\logs` | dir | 🟢 safe (安全) |  | Kimi 桌面版运行日志 |
+| Kimi 桌面版缓存 | `%APPDATA%\kimi-desktop\Cache` | dir | 🟢 safe (安全) |  | Kimi 桌面版普通缓存 |
+| Kiro GPU 缓存 | `%APPDATA%\Kiro\GPUCache` | dir | 🟢 safe (安全) |  | Kiro 图形渲染缓存 |
+| Kiro Service Worker | `%APPDATA%\Kiro\Service Worker\ScriptCache` | dir | 🟢 safe (安全) |  | Kiro Service Worker 脚本缓存 |
+| Kiro 代码缓存 | `%APPDATA%\Kiro\Code Cache` | dir | 🟢 safe (安全) |  | Kiro 前端脚本缓存 |
+| Kiro 崩溃报告 | `%APPDATA%\Kiro\Crashpad\reports` | dir | 🟢 safe (安全) |  | Kiro 崩溃转储报告 |
+| Kiro 缓存 | `%APPDATA%\Kiro\Cache` | dir | 🟢 safe (安全) |  | Kiro 普通缓存 |
+| Kiro 账号管理 GPU 缓存 | `%APPDATA%\kiro-account-manager\GPUCache` | dir | 🟢 safe (安全) |  | Kiro 账号管理组件图形渲染缓存 |
+| Kiro 账号管理代码缓存 | `%APPDATA%\kiro-account-manager\Code Cache` | dir | 🟢 safe (安全) |  | Kiro 账号管理组件前端脚本缓存 |
+| LM Studio GPU 缓存 | `%APPDATA%\LM Studio\GPUCache` | dir | 🟢 safe (安全) |  | LM Studio 图形渲染缓存 |
+| LM Studio Service Worker | `%APPDATA%\LM Studio\Service Worker\CacheStorage` | dir | 🟢 safe (安全) |  | LM Studio Service Worker 缓存 |
+| LM Studio 代码缓存 | `%APPDATA%\LM Studio\Code Cache` | dir | 🟢 safe (安全) |  | LM Studio 前端脚本缓存 |
+| LM Studio 日志 | `%APPDATA%\LM Studio\logs` | dir | 🟢 safe (安全) |  | LM Studio 运行日志 |
+| LM Studio 缓存 | `%APPDATA%\LM Studio\Cache` | dir | 🟢 safe (安全) |  | LM Studio 普通缓存 |
+| Ollama 日志 | `%LOCALAPPDATA%\Ollama\logs` | dir | 🟢 safe (安全) |  | Ollama 本地运行日志 |
+| opencode 桌面版 GPU 缓存 | `%APPDATA%\ai.opencode.desktop\GPUCache` | dir | 🟢 safe (安全) |  | opencode 桌面版图形渲染缓存 |
+| opencode 桌面版代码缓存 | `%APPDATA%\ai.opencode.desktop\Code Cache` | dir | 🟢 safe (安全) |  | opencode 桌面版前端脚本缓存 |
+| opencode 桌面版崩溃报告 | `%APPDATA%\ai.opencode.desktop\Crashpad\reports` | dir | 🟢 safe (安全) |  | opencode 桌面版崩溃转储报告 |
+| opencode 桌面版缓存 | `%APPDATA%\ai.opencode.desktop\Cache` | dir | 🟢 safe (安全) |  | opencode 桌面版普通缓存 |
+| opencode 运行日志 | `%USERPROFILE%\.local\share\opencode\log` | dir | 🟢 safe (安全) |  | opencode 按时间戳生成的运行日志 |
+
+## 评级分布
+| 评级 | 数量 |
+|------|------|
+| 🟢 safe（安全） | 57 |
+| 🟡 caution（谨慎） | 0 |
+| 🔴 dangerous（危险） | 6 |
+
+共 63 条规则。safe 默认启用，caution/dangerous 需 `-ConfirmIds` 显式确认。
