@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 extract_builtin_rules.py - Extract built-in system rules (with human-annotated
-risk descriptions) from c_cleaner_plus runtime snapshot config.
+risk descriptions) from a community rule-source runtime snapshot config.
 
 Source: config/source/c_cleaner_plus/cdisk_cleaner_config.json
 Output: config/source/c_cleaner_plus/builtin_system_rules.json

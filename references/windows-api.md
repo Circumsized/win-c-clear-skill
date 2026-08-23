@@ -75,7 +75,7 @@ Windows 官方文档（MSDN/Win32）。
 |-----|------|--------------|
 | `GetNamedSecurityInfo` / `SetNamedSecurityInfo` | 读取/修改安全描述符 | 未直接用（icacls 原生命令替代） |
 | `AdjustTokenPrivileges` | 提升进程特权（SE_BACKUP/SE_RESTORE/SE_TAKE_OWNERSHIP） | 未直接用（takeown/icacls 命令替代） |
-| TakeOwnership | 获取 TrustedInstaller 所有权 | **已用（命令层）**：`windows-old` 目标的 `takeown /F ... /A /R /D Y` + `icacls /grant Administrators:F` 原生序列（两段确认后） |
+| TakeOwnership | 获取 TrustedInstaller 所有权 | **已用（命令层）**：`windows-old` 目标的 `takeown /F ... /A /R /D Y` + `icacls /grant *S-1-5-32-544:F`（用内置 Administrators 组的固定 SID 而非本地化组名，跨语言系统通用）原生序列（两段确认后） |
 
 **本 skill 立场**：C:\Windows\WinSxS、C:\Windows\Installer 等 TrustedInstaller 区域**永不触碰**（引擎黑名单 guardrail），不像传统清理工具抢所有权强删——WinSxS 唯一安全路径是 DISM StartComponentCleanup（仅建议不执行）。
 

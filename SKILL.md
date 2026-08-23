@@ -1,19 +1,8 @@
 ---
 name: win-c-clear-skill
-description: >-
-  当用户提到 C 盘满了 / C 盘空间不足 / 清理缓存 / 释放磁盘空间 / 磁盘清理 / 清理垃圾 /
-  释放空间 / reclaim Windows space / C drive full / clean disk caches / free up space /
-  disk cleanup,或点名 win-c-clear-skill 时使用本技能。面向 Agent 的 Windows C 盘清理技能:
-  先扫描后删除、三级风险分级(safe/caution/dangerous)、社区规则合并(1.5 万+目标:winapp2.ini
-  v260730、BleachBit cleaners、c_cleaner_plus)、并行扫描+智能尺寸缓存(重复扫描瞬时返回)、
-  Restart Manager 锁检测、GPU/CPU 重复文件哈希级联、工作集整理、稳定的紧凑 JSON_SUMMARY
-  数据契约。适配 Claude Code、DeepSeek Harness (dsh)、codex、Trae、Cursor。
-  首次清理通常可回收 20-150 GB 可再生缓存。
+description: Windows C 盘清理技能：先扫描后删除、三级风险分级(safe/caution/dangerous)、1.5 万+ 社区规则合并(winapp2.ini v260730 / BleachBit / 精选社区规则)、并行扫描+智能尺寸缓存、Restart Manager 锁检测、GPU/CPU 重复文件哈希级联、稳定 JSON_SUMMARY 契约。当用户提到 C 盘满了 / 空间不足 / 清理缓存 / 释放磁盘空间 / 磁盘清理 / 清理垃圾 / reclaim Windows space / C drive full / clean disk caches / free up space / disk cleanup，或点名 win-c-clear-skill 时使用。首次清理通常回收 20-150 GB 可再生缓存。适配 Claude Code / DeepSeek Harness / codex / Trae / Cursor。
 license: MIT
-compatibility: >-
-  Windows 10/11/Server (x64). Requires PowerShell 5.1+ (bundled with Windows);
-  Python 3.8+ only for optional rule-refresh tooling. No network access needed
-  at runtime (community rules are vendored in assets/rules/).
+compatibility: Windows 10/11/Server (x64). Requires PowerShell 5.1+ (bundled with Windows); Python 3.8+ only for optional rule-refresh tooling. No network access needed at runtime (community rules are vendored in assets/rules/).
 metadata:
   author: win-c-clear-skill contributors
   version: "1.0.0"
@@ -24,7 +13,7 @@ metadata:
 
 Free space on Windows `C:` by scanning and cleaning **configurable, mostly regenerable caches**,
 driven by natural language through any agent that loads `SKILL.md`. Respond in the **user's language**.
-Engine highlights: c_cleaner_plus rule merging, parallel scanning, and engine-level safety gates.
+Engine highlights: community rule merging, parallel scanning, and engine-level safety gates.
 
 ## When to use
 
@@ -49,6 +38,8 @@ win-c-clear-skill/
   README.md                    # install / standalone usage (read on demand)
   CONTRIBUTING.md / SECURITY.md / CODE_OF_CONDUCT.md / LICENSE
                                # open-source community & compliance files
+  CHANGELOG.md                 # release notes (Keep a Changelog + SemVer)
+  SECURITY-AUDIT.md            # audit record: known defects, fixes, open items (read on demand)
   references/                  # loadable reference DOCS (read on demand)
     README.md                  # index
     rules-and-merging.md       # rule sources, merge pipeline, rule-set categories, upgrade how-to
@@ -59,23 +50,31 @@ win-c-clear-skill/
     harness-adaptation.md      # claude code / codex / deepseek harness notes
     guardrails.md              # protected-path spec, fences, plan gate (engine blacklist)
     windows-api.md             # Windows API deep reference (MFT/RM/deletion/VSS/CBS...)
+    AUDIT-REPORT-20260823.md   # 安全审计报告快照(2026-08-23 验收结论)
   assets/rules/                # SELF-CONTAINED rule data (~15.4k targets, vendored)
     winapp2_latest.json        #   fresh Winapp2.ini v260730 (14117 entries)
     community_cleaners.json    #   fresh BleachBit cleaners (986 entries)
-    rules_*.json + cdisk_*.json#   curated c_cleaner_plus rules + app state
+    rules_*.json + cdisk_*.json#   curated community rules + app state
   config/targets.json          # builtin whitelist (87 targets, editable per machine)
   config/scan-lists.json       # scan whitelist (safe dirs) + blacklist (system core) + scan modes
   config/targets.merged.json   # [generated] builtin + rules merged (origin + signals trace)
   config/user-overrides.json   # [generated] user enable/disable choices
   config/scan-cache.json       # [generated] smart size cache (mtime+TTL)
   scripts/Invoke-CDriveCleanup.ps1   # engine: Scan|Clean|Analyze|MergeConfig
+  scripts/ParallelScanner.cs   # C# bounded-parallel size scanner (Add-Type at runtime)
+  scripts/MftScanner.cs        # C# NTFS MFT direct reader (Analyze fast path, admin only)
   scripts/Scan.bat / Clean-Safe.bat # double-click entries
   tools/install-harness.ps1    # one-click install: claude / codex / deepseek harness dirs
   tools/fetch_rules.py         # rule refresh tooling + _cache
   tools/generate_rules_catalog.py   # regen references/rulesets/ + rules-catalog.md from assets/rules
-  tools/test-scan-lists.py     # unit test: blacklist/whitelist pattern semantics (39 cases)
+  tools/verify-engine.ps1      # gate: PS syntax + C# compile + blacklist regex compile
+  tools/verify_safety.ps1      # suite: guardrails / tiers / normalization / unknown-id contract
+  tools/test-regression.ps1    # suite: glob scope, reparse fence, plan scope, injection guards
+  tools/test-scan-lists.py     # unit test: blacklist/whitelist pattern semantics
   tools/restore-quarantine.ps1 # restore quarantined items from manifest
+  tools/audit/                 # 一次性规则数据审计探针(_audit_*.ps1,仓库根运行)
   logs/                        # [generated] audit logs (structured modular reports)
+  reports/                     # [generated] Chinese Markdown cleanup reports (-ReportFile)
   quarantine/                  # [generated] quarantine roots (-RecoveryMode quarantine)
   backups/                     # [generated] dangerous-tier backups (-BackupDangerous)
 ```
@@ -85,9 +84,9 @@ win-c-clear-skill/
 `~/.agents/skills`; `-Symlink` for junctions). Details: [references/harness-adaptation.md](references/harness-adaptation.md).
 
 **Rule dependency**: self-contained and portable — `assets/rules/` vendors the community rule set
-(Winapp2 v260730 + BleachBit cleaners + curated c_cleaner_plus rules) and `mergeSources` points to it
+(Winapp2 v260730 + BleachBit cleaners + curated community rules) and `mergeSources` points to it
 via a skill-relative path. `externalMergeSources` is empty by default; add ABSOLUTE paths only if you
-have a local c_cleaner_plus install (never required). Refresh via `tools/fetch_rules.py`.
+have a local rule-source install (never required). Refresh via `tools/fetch_rules.py`.
 Details: [references/rules-and-merging.md](references/rules-and-merging.md).
 
 ## Mandatory workflow (track visibly, never skip steps)
@@ -135,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<skill>/scripts/Invoke-CDri
 Merge pipeline (deterministic, reproducible): discover → parse (5/6-tuple JSON, double-encoded v2 format) →
 normalize paths to env vars → dedupe by normalized path (conservative tier wins) → auto-tier
 (cache/temp/log→safe; download/package→caution; backup/data/file→dangerous; **unknown→dangerous**) →
-merge with builtin (origin: builtin|c_cleaner_plus|merged; builtin never overwritten) → persist.
+merge with builtin (origin: builtin|community-sourced|merged; builtin never overwritten) → persist.
 
 ### 2) Scan (never delete in this step)
 
@@ -170,7 +169,8 @@ scans → much faster, and scanning cannot stray into protected zones.
 -ScanMode fast       # depth 1 — quickest, top-level cache dirs only
 -ScanMode standard   # default: depth 3, no junctions
 -ScanMode deep       # full recursion within whitelist, blacklist enforced
--ScanMode diagnostic # audit mode: report blacklist hits without cleaning
+-ScanMode diagnostic # READ-ONLY audit: disables the whitelist to show what rules would reach.
+                     #   Scan/Analyze only — the engine refuses -Mode Clean with it (exit 3).
 ```
 
 Scan rating (A–F) is computed from reclaimable size / skips / blacklist hits and printed
@@ -185,7 +185,7 @@ options + consequences + default (three elements mandatory):
 > 建议清理 safe 档共 N 项（约 X GB）；caution 档 M 项需点名确认（可能影响修复/更新）；
 > dangerous 档默认跳过（可能丢数据）。回复：全部safe / 具体id（如 uv-cache,wu-download）/ 取消。
 
-For c_cleaner_plus merged rules (origin `c_cleaner_plus`), proactively list them (top ones by size)
+For community-merged rules (origin `c_cleaner_plus`), proactively list them (top ones by size)
 and offer per-id enable/disable. Write the user's choices to `config/user-overrides.json`
 (`{"version":1,"enabled":{"<id>":true|false}}`); the engine applies them on next run.
 
@@ -193,7 +193,7 @@ and offer per-id enable/disable. Write the user's choices to `config/user-overri
 
 ```powershell
 # safe tier only (one confirmation is enough)
-... -Mode Clean -Tiers safe -Elevate -LogPath "<skill-root>\logs\wincc_log_<ts>.txt"
+... -Mode Clean -Tiers safe -Elevate -LogPath "<skill-root>\logs\win-c-clear-skill_log_<ts>.txt"
 
 # specific ids incl. caution (user must have named them):
 ... -Mode Clean -Ids "uv-cache,wu-download" -ConfirmIds "wu-download" -Tiers safe,caution -Elevate
@@ -203,10 +203,13 @@ Engine-level gates (defense in depth; agent must ALSO follow reference.md protoc
 
 - `-ConfirmIds` required for any caution/dangerous id (two-phase confirmation, see reference.md)
 - `-AllowStop` required before any process/service stop; ask user first, list affected apps
-- `-BackupDangerous` backs up dangerous targets to Desktop before deletion
+- `-BackupDangerous` backs up dangerous targets to `<skill-root>\backups\` before deletion
+  (same volume when the skill is on C:, so it does not free space — offer another drive for big ones)
 - `-DryRun` rehearses everything with zero deletion (use for audits)
 - `-Elevate` triggers UAC; on decline → clean non-admin targets, report `need-admin` with exact
   rerun command, never claim full success
+- `-Ids`/`-ConfirmIds` accept **engine ids only** (letters/digits/`_`/`.`/`-`/`,`); anything else
+  exits 3 (these strings reach an elevated child's command line)
 
 ### 5) Report (user's language)
 
@@ -236,7 +239,7 @@ Unknown/unclassifiable targets are **always dangerous + disabled** — never gue
   "mode": "Scan|Clean|Analyze|MergeConfig",
   "os": {"caption":"", "build":"", "isServer":false},
   "drive": {"letter":"C", "freeGB_before":0, "freeGB_after":0},
-  "items": [{"id":"","name":"","tier":"safe|caution|dangerous","origin":"builtin|c_cleaner_plus|merged",
+  "items": [{"id":"","name":"","tier":"safe|caution|dangerous","origin":"builtin|community-sourced|merged",
              "enabled":true,"exists":true,"requiresAdmin":false,
              "sizeGB_before":0,"sizeGB_after":0,"freedGB":0,
              "status":"scanned|cleaned|skipped|need-admin|locked|dryrun|error","message":""}],
@@ -268,7 +271,9 @@ migrate/junction/uninstall suggestions. Depth/file budgets follow `-ScanMode`
 - `wevtutil cl <log>` clears Event Logs (Application/System/Setup caution; Security dangerous)
 - `powercfg /h off` removes hiberfil.sys cleanly (never direct file deletion)
 - `uv cache clean` / `pip cache purge` / `npm cache clean --force` as `preCommands` (auto-skipped if
-  tool absent)
+  tool absent). `preCommands` are **allowlisted** (`uv`/`pip`/`pip3`/`npm`/`yarn`/`pnpm`/`wevtutil`/
+  `powercfg`) and must be free of shell metacharacters — any other tool or a `& | < > ^ % "` in the
+  command is refused, never executed
 - `takeown` / `icacls` + delete for Windows.old (two-phase confirmed dangerous)
 - `robocopy /L` as native fallback when .NET enumeration is access-denied
 - **Restart Manager (`rstrtmgr.dll` P/Invoke)**: when files are locked, reports the holding
@@ -318,12 +323,18 @@ when the user asks "能找回吗", default to permanent when they just want spac
    (`config/scan-lists.json`); system core areas are blacklisted from scanning
    (blacklist ∪ engine GuardPatterns — triple guarantee: scan filter + merge demotion + deletion re-assert)
 3. **Whitelist-only ids** + **protected-path blacklist** (see Guardrails section)
-4. **Hot-file fence**: items modified < `-HotMinutes` (default 30) are skipped as "likely in
-   active use" and survive (verified: fresh temp file survives a clean; root dir only removed when empty)
-5. **Risky-extension fence**: exe/dll/sys/msi/... files are skipped in permanent mode for
+4. **Hot-file fence**: top-level children whose own mtime is < `-HotMinutes` (default 30) are
+   skipped as "likely in active use". Note the precise scope: a directory's mtime only changes when
+   its *direct* children change, so a freshly written file nested deeper does **not** keep its
+   ancestor alive. Root dir only removed when empty
+5. **Reparse-point fence**: junctions/symlinks are never recursed into (PowerShell 5.1
+   `Remove-Item -Recurse` follows them and would delete the link target, typically on another
+   drive — out of this skill's C:-only scope). A target path that IS a link → `skipped`; a link
+   inside a cleaned directory → unlinked only
+6. **Risky-extension fence**: exe/dll/sys/msi/... files are skipped in permanent mode for
    non-builtin safe/caution targets (builtin curated targets own their extensions)
-6. **RM lock reporting**: locked files report the holding process (name+pid)
-7. **Audit trail**: every run writes a structured modular report (8 sections: overview /
+7. **RM lock reporting**: locked files report the holding process (name+pid)
+8. **Audit trail**: every run writes a structured modular report (8 sections: overview /
    environment / drive / target stats / results / fences / top-10 details / artifacts) to
    `<skill-root>\logs\win-c-clear-skill_log_<ts>.txt` (portable; override with `-LogPath`)
 
@@ -337,7 +348,11 @@ when the user asks "能找回吗", default to permanent when they just want spac
   dangerous+disabled) AND at clean time (`blocked-by-guardrail`). Spec: [references/guardrails.md](references/guardrails.md)
 - **Advisory-only targets**: `pagefile-swapfile` never deletes; returns status `advisory` with
   sysdm.cpl instructions even after two-phase confirmation
-- **Windows.old**: dangerous special — takeown/icacls native sequence, only after two-phase confirm
+- **Windows.old**: dangerous special — **always blocked by the engine guardrail** (returns
+  `blocked-by-guardrail`, deletes nothing); direct users to cleanmgr / Storage settings
+- **Reparse-point fence**: junctions/symlinks are never recursed into. A target path that IS a link
+  is skipped; a link found inside a cleaned directory is unlinked only. Deleting through a link
+  would hit the link target (often another drive), so the engine never does it.
 
 ## Token economy (agent-friendly)
 

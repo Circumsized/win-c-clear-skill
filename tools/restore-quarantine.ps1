@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Restore items quarantined by win-c-clear-skill (-RecoveryMode quarantine).

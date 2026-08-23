@@ -1,10 +1,11 @@
 {
   "version": 2,
   "drive": "C",
-  "notes": "Template for win-c-clear-skill whitelist. Copy to targets.json and edit per machine. Paths MUST use environment variables (%LOCALAPPDATA%/%APPDATA%/%USERPROFILE%/%TEMP%/%ProgramData%/%WinDir%/%ProgramFiles%/%SystemDrive%) so the skill works across PCs and users.",
+  "notes": "Template for win-c-clear-skill whitelist. Copy to targets.json and edit per machine. Paths MUST use environment variables (%LOCALAPPDATA%/%APPDATA%/%USERPROFILE%/%TEMP%/%ProgramData%/%WinDir%/%ProgramFiles%/%SystemDrive%) so the skill works across PCs and users. IMPORTANT for type=glob: 'paths' is the CONTAINING DIRECTORY and 'glob' selects which files inside it are removed (root level only, subdirectories untouched). An empty or missing 'glob' on a glob target means the whole directory's contents get cleaned, so never point 'paths' at a directory you would not be willing to empty.",
   "mergeSources": [
     "..\\assets\\rules"
   ],
+  "externalMergeSources": [],
   "targets": [
     {
       "id": "example-safe-cache",
@@ -18,6 +19,20 @@
       "stopProcesses": [],
       "stopServices": [],
       "risk": "Regenerable cache; one confirmation after scan is enough."
+    },
+    {
+      "id": "example-glob-scoped",
+      "name": "Example glob-scoped file cleanup",
+      "enabled": false,
+      "tier": "safe",
+      "requiresAdmin": false,
+      "type": "glob",
+      "paths": ["%LOCALAPPDATA%\\ExampleApp"],
+      "glob": "*.log",
+      "preCommands": [],
+      "stopProcesses": [],
+      "stopServices": [],
+      "risk": "Removes ONLY root-level files matching 'glob' inside 'paths'; subdirectories and non-matching files are left alone. Drop the glob and this target would empty the entire directory instead."
     },
     {
       "id": "example-caution-download",

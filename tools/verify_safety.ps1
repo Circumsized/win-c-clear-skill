@@ -1,12 +1,18 @@
-# Temporary verification harness (read-only checks). Deleted after verification.
+﻿# Temporary verification harness (read-only checks). Deleted after verification.
 $ErrorActionPreference = 'Continue'
+# The engine emits UTF-8 on stdout ([Console]::OutputEncoding inside the child). Capturing that
+# output with the parent's default codepage (GBK/936 on zh-CN systems) corrupts multibyte text —
+# a trailing UTF-8 byte can pair with the NEXT ASCII byte under GBK, EATING the closing quote of
+# a JSON string and making ConvertFrom-Json fail mid-object. Decode child output as UTF-8.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $script = Join-Path $root 'scripts\Invoke-CDriveCleanup.ps1'
 $fail = 0
 
 Write-Host '=== 1. PowerShell syntax check (main script) ==='
 $tokens = $null; $errors = $null
-[System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors) | Out-Null
+$scriptText1 = [System.IO.File]::ReadAllText($script, [System.Text.Encoding]::UTF8)
+[System.Management.Automation.Language.Parser]::ParseInput($scriptText1, [ref]$tokens, [ref]$errors) | Out-Null
 if ($errors.Count -eq 0) { Write-Host 'PASS: Invoke-CDriveCleanup.ps1 syntax OK' }
 else {
   $fail++
@@ -18,7 +24,8 @@ Write-Host ''
 Write-Host '=== 2. PowerShell syntax check (all .ps1 in scripts/) ==='
 Get-ChildItem (Join-Path $root 'scripts') -Filter *.ps1 | ForEach-Object {
   $t2 = $null; $e2 = $null
-  [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$t2, [ref]$e2) | Out-Null
+  $text2 = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+  [System.Management.Automation.Language.Parser]::ParseInput($text2, [ref]$t2, [ref]$e2) | Out-Null
   if ($e2.Count -eq 0) { Write-Host ('PASS: ' + $_.Name) }
   else { $fail++; Write-Host ('FAIL: ' + $_.Name + ' (' + $e2.Count + ' errors)') }
 }
@@ -40,7 +47,7 @@ foreach ($j in $jsonFiles) {
 
 Write-Host ''
 Write-Host '=== 4. Guardrail semantics test (extract functions via AST) ==='
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$null)
+$ast = [System.Management.Automation.Language.Parser]::ParseInput([System.IO.File]::ReadAllText($script, [System.Text.Encoding]::UTF8), [ref]$null, [ref]$null)
 $funcs = @('Expand-EnvPath','ConvertTo-NormPath','Get-AutoTier','Test-GuardrailBlocked','Test-PathAgainstWhitelist','Test-PathAgainstBlacklist','Get-EngineGuardPatterns','Get-GroupCounts','Get-GroupSumGB')
 $found = @{}
 foreach ($f in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
@@ -83,6 +90,12 @@ $guardTests = @(
   @{ path = 'C:\Windows.old\Users'; expect = $true; name = 'Windows.old' },
   @{ path = 'C:\Windows'; expect = $true; name = 'Windows root' },
   @{ path = 'C:\Windows\System32'; expect = $true; name = 'System32 root' },
+  @{ path = 'C:\Users\Bob\AppData\Local\Temp\..\..\Windows\System32'; expect = $true; name = '.. traversal to System32' },
+  @{ path = 'C:\Windows.'; expect = $true; name = 'trailing dot alias of Windows' },
+  @{ path = 'C:\Windows '; expect = $true; name = 'trailing space alias of Windows' },
+  @{ path = 'C:\'; expect = $true; name = 'drive root expanded (C:\)' },
+  @{ path = '%SystemDrive%'; expect = $true; name = 'drive root normalized (%SystemDrive%)' },
+  @{ path = 'C:'; expect = $true; name = 'drive root bare (C:)' },
   @{ path = '%LOCALAPPDATA%\Temp\junk.tmp'; expect = $false; name = 'user temp (allowed)' },
   @{ path = '%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache'; expect = $false; name = 'chrome cache (allowed)' },
   @{ path = '%APPDATA%\Code\Cache'; expect = $false; name = 'vscode cache (allowed)' }
@@ -178,10 +191,11 @@ Write-Host '=== 10. Unknown-id contract regression (DryRun, zero deletion) ==='
 # tier/exists gates. Regression for the gate-override bug.
 try {
   $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Mode Clean -Ids 'C:\Windows\System32' -Tiers safe -DryRun 2>&1 | Out-String
-  $m = [regex]::Match($out, '(?s)JSON_SUMMARY_BEGIN\s*-+\s*\r?\n\s*(\{.*?\})\s*\r?\n')
-  if (-not $m.Success) { $m = [regex]::Match($out, '(?s)(\{"schemaVersion":1,"mode":"Clean".*?\})\s*\r?\n') }
+  # Anchor on the END marker instead of "first } + newline": the compact JSON is one long line
+  # that console capture may wrap; a non-greedy \{.*?\} can stop inside a nested object.
+  $m = [regex]::Match($out, '(?s)JSON_SUMMARY_BEGIN\s*-+\s*(.*?)\s*-{3,}\s*JSON_SUMMARY_END')
   if ($m.Success) {
-    $js = $m.Groups[1].Value | ConvertFrom-Json
+    $js = $m.Groups[1].Value.Trim() | ConvertFrom-Json
     $uid = @($js.items | Where-Object { $_.origin -eq 'none' }) | Select-Object -First 1
     if ($uid -and $uid.status -eq 'error') { Write-Host 'PASS: unknown id -> status "error"' }
     else { $fail++; Write-Host ('FAIL: unknown id status = ' + $(if ($uid) { $uid.status } else { '(missing)' }) + ' (expect error)') }

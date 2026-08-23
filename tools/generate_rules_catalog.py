@@ -5,13 +5,20 @@ generate_rules_catalog.py — 从 assets/rules/ 生成「分类评级」的规�
 
 用途
 ----
-把 c_cleaner_plus 的 curated 规则集（common_custom_rules + rules_*）逐个转换改写
+把社区精选规则集（common_custom_rules + rules_*）逐个转换改写
 为可读的 Markdown 参考文档，写入 references/rulesets/，并在 references/ 生成一份
 分类评级总览 rules-catalog.md，供 skill 执行时引导用户选择规则集。
 
-评级语义 100% 复用 merge_rules.classify_tier（与引擎 Get-AutoTier 同源），
-避免「文档评级」与「实际合并评级」不一致。社区大源（winapp2/bleachbit/cdisk_自定义）
-只做统计数据、不逐条列出（体量过大且默认 opt-in）。
+评级语义
+--------
+tier 评级来自 merge_rules.classify_tier —— 那是一套**独立的 Python 关键词启发式**，
+与引擎实际执行的 Get-AutoTier（Invoke-CDriveCleanup.ps1 内的编译正则）**并非同源**，
+两者存在双向分歧（例：含 "User Data" 的路径在此判 dangerous，引擎按末段 "cache" 判 safe；
+"cookies"/"history" 在此判 caution，引擎判 dangerous）。
+
+因此本脚本产出的文档只用于「选哪些规则集」的规模与风险感知，**不可**用来判断某条规则
+会不会被自动清理。真实分级以引擎合并产物 config/targets.merged.json 为唯一权威。
+社区大源（winapp2/bleachbit/cdisk_自定义）只做统计数据、不逐条列出（体量过大且默认 opt-in）。
 
 用法
 ----
@@ -26,7 +33,9 @@ import sys
 from collections import OrderedDict, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from merge_rules import classify_tier  # 复用评级逻辑（与引擎同源）
+# NOTE: 独立启发式，非引擎同源（见上方「评级语义」）。merge_rules 模块级只有常量定义且带
+# __main__ 保护，因此 import 不会触发它对 config/source 等缺失目录的读取。
+from merge_rules import classify_tier
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 RULES_DIR = os.path.join(ROOT, 'assets', 'rules')
@@ -71,9 +80,9 @@ CATEGORY_DESC_CN = {
 BULK_SOURCES = [
     ('winapp2_latest.json', 'community', 'Winapp2 社区规则（MoscaDotTo，opt-in）', 'tuple'),
     ('community_cleaners.json', 'community', 'BleachBit cleaners（仅 Windows 路径，opt-in）', 'tuple'),
-    ('cdisk_cleaner_custom_rules.json', 'community', 'c_cleaner_plus 自定义规则导出（opt-in）', 'tuple'),
-    # system 类：c_cleaner_plus 运行时勾选状态，双重编码 v2（order 内每个元素 = [规则JSON字符串, 勾选状态]）
-    ('cdisk_cleaner_config.json', 'system', 'c_cleaner_plus 应用勾选状态（含系统规则，双重编码 v2，opt-in）', 'double_encoded'),
+    ('cdisk_cleaner_custom_rules.json', 'community', '社区自定义规则导出（opt-in）', 'tuple'),
+    # system 类：运行时勾选状态，双重编码 v2（order 内每个元素 = [规则JSON字符串, 勾选状态]）
+    ('cdisk_cleaner_config.json', 'system', '应用勾选状态（含系统规则，双重编码 v2，opt-in）', 'double_encoded'),
 ]
 
 TIER_EMOJI = {'safe': '🟢 safe', 'caution': '🟡 caution', 'dangerous': '🔴 dangerous'}
@@ -168,6 +177,12 @@ def write_ruleset_doc(key, title, desc, rules, notes=None):
     lines.append('')
     lines.append(f'> {desc}')
     lines.append('')
+    lines.append('> ⚠️ **本表「评级」列不是引擎的实际分级。** 它由 `merge_rules.classify_tier`')
+    lines.append('> （独立的 Python 关键词启发式）生成，与引擎的 `Get-AutoTier` 双向分歧：例如含')
+    lines.append('> `User Data` 或 `dxcache` 的路径在此偏严（caution/dangerous），引擎按末段 `cache`')
+    lines.append('> 判 **safe** 并默认启用；`cookies`/`history` 在此偏松（caution），引擎判 **dangerous**。')
+    lines.append('> 真实分级与 enabled 状态以 `config/targets.merged.json` 或 `-Mode Scan` 输出为准。')
+    lines.append('')
     lines.append('| 名称 | 路径 | 类型 | 评级 | 需管理员 | 说明 |')
     lines.append('|------|------|------|------|---------|------|')
     for r in sorted(rules, key=lambda x: (x['tier'], x['name'].lower())):
@@ -185,7 +200,8 @@ def write_ruleset_doc(key, title, desc, rules, notes=None):
     for k in ('safe', 'caution', 'dangerous'):
         lines.append(f'| {TIER_EMOJI[k]}（{TIER_CN[k]}） | {hist[k]} |')
     lines.append('')
-    lines.append(f'共 {len(rules)} 条规则。safe 默认启用，caution/dangerous 需 `-ConfirmIds` 显式确认。')
+    lines.append(f'共 {len(rules)} 条规则。引擎的实际默认启用规则是「引擎判定为 safe 且未被护栏降级」，')
+    lines.append('与本表评级不一定一致（见文首警告）；caution/dangerous 一律需 `-ConfirmIds` 显式确认。')
     lines.append('')
     if notes:
         lines.append('## 说明')
@@ -201,7 +217,6 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
     per_category = defaultdict(list)   # key -> rules
-    per_file_meta = []                 # (key, title, desc, count)
     total = 0
 
     for filename, (key, title) in CATEGORY.items():
@@ -245,8 +260,26 @@ def main():
     lines.append('# 规则目录与分类评级（rules-catalog.md）')
     lines.append('')
     lines.append('本文件是 skill 清理规则集的**分类评级索引**，用于引导用户按需选择规则集。')
-    lines.append('明细见 [references/rulesets/](rulesets/) 下各分类文档；评级语义与引擎合并管线同源')
-    lines.append('（`tools/generate_rules_catalog.py` 复用 `merge_rules.classify_tier`），可复现。')
+    lines.append('明细见 [references/rulesets/](rulesets/) 下各分类文档。')
+    lines.append('')
+    lines.append('> ⚠️ **评级权威性说明**')
+    lines.append('>')
+    lines.append('> 本目录及 `rulesets/` 下的 tier 评级由 `tools/generate_rules_catalog.py` 调用')
+    lines.append('> `merge_rules.classify_tier` 生成，那是一套**独立的关键词启发式**，与引擎实际执行的')
+    lines.append('> `Get-AutoTier`（`Invoke-CDriveCleanup.ps1` 内的编译正则）**并非同源**。')
+    lines.append('>')
+    lines.append('> 两者已知分歧（双向都有）：')
+    lines.append('>')
+    lines.append('> | 路径特征 | 本目录评级 | 引擎实际 tier | 方向 |')
+    lines.append('> |---------|-----------|--------------|------|')
+    lines.append('> | `dxcache` / `glcache` / `computecache` / `nv_cache` | caution | **safe** | 文档偏严 |')
+    lines.append('> | 含 `User Data` 的路径（如 Chrome 缓存） | dangerous | **safe**（末段 `cache` 命中） | 文档偏严 |')
+    lines.append('> | `cookies` / `history` | caution | **dangerous** | 文档偏松 |')
+    lines.append('> | `快照` / `遥测` / `workspace` / 裸 `update` | safe / dangerous | **dangerous**（无信号→红线兜底） | 视条目而定 |')
+    lines.append('>')
+    lines.append('> **引擎是唯一权威**：实际 tier、enabled 与门控一律以 `config/targets.merged.json`')
+    lines.append('> （由引擎合并管线生成）为准。本目录仅用于「选哪些规则集」的规模感知，')
+    lines.append('> **不要**用它判断某条规则会不会被自动清理。要看真实分级，读 merged 产物或跑 `-Mode Scan`。')
     lines.append('')
     lines.append('## 分类总览')
     lines.append('')

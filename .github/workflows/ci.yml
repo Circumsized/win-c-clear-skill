@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   test:
@@ -64,6 +65,12 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify_safety.ps1
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: Audit regression suite (glob scope, reparse fence, plan scope, injection guards)
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-regression.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: SKILL.md frontmatter sanity (Agent Skills spec)
         shell: pwsh
         run: |
@@ -103,8 +110,14 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP 'win-c-clear-skill'
           Copy-Item . $stage -Recurse -Force
           # 剔除运行时生成物与开发目录,保持发布包干净
-          foreach ($p in @('logs','reports','quarantine','backups','tools\_cache')) {
+          # .git 必须剔除:Copy-Item . -Recurse 会把整个版本历史打进发布包
+          foreach ($p in @('.git','logs','reports','quarantine','backups','tools\_cache')) {
             Remove-Item (Join-Path $stage $p) -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          # 生成物(合并配置 19MB / 尺寸缓存 / 用户覆写 / 扫描计划)一律不随发布包分发。
+          # last-scan.json 尤其重要:它是 Clean 的 plan gate 凭据,随包分发等于预授权删除。
+          foreach ($f in @('config\targets.merged.json','config\scan-cache.json','config\user-overrides.json','config\last-scan.json')) {
+            Remove-Item (Join-Path $stage $f) -Force -ErrorAction SilentlyContinue
           }
           Get-ChildItem $stage -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
           Get-ChildItem $stage -Filter '*.pyc' -Recurse | Remove-Item -Force

@@ -23,7 +23,7 @@ Skipped (superseded or state-only):
 
 Outputs:
   config/generated/targets.merged.json   full collapsed library (git-ignored)
-  config/targets.json                    baseline: curated + built-in + custom
+  config/generated/baseline.json         baseline: curated + built-in + custom
   config/targets.example.json            schema example
   config/generated/merge_report.json     statistics + unparsed list
 
@@ -123,10 +123,16 @@ def parse_builtin_system(path):
     return out
 
 
-def parse_tuple_rules(path, origin):
-    """P3/P4/P5: 5-tuple / 6-tuple array rules."""
-    with open(path, encoding='utf-8') as f:
-        data = json.load(f)
+def parse_tuple_rules(path, origin, data=None):
+    """P3/P4/P5: 5-tuple / 6-tuple array rules.
+
+    `data`: pre-loaded JSON list, so callers that already parsed the file for
+    validation stats can pass it through instead of a second parse (winapp2
+    exports are multi-MB; double JSON decode is pure wasted CPU).
+    """
+    if data is None:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
     out = []
     for r in data:
         if not isinstance(r, list) or len(r) < 5:
@@ -314,7 +320,7 @@ def load_sources(root):
             if bad:
                 unparsed.append({'file': cf, 'count': len(bad),
                                  'sample': bad[0] if bad else None})
-            sources.append((3, parse_tuple_rules(fp, 'c_cleaner_plus')))
+            sources.append((3, parse_tuple_rules(fp, 'c_cleaner_plus', raw)))
 
     p4 = os.path.join(root, 'config', 'source', 'bleachbit_community',
                       'community_cleaners.json')
@@ -483,7 +489,7 @@ def run(root, baseline_out):
                 and 'community_cleaners.json' not in (t.get('sourceFiles') or [])]
     baseline_payload = {
         'schemaVersion': '1.0',
-        'notes': 'Baseline target list (curated + c_cleaner_plus built-in/custom). '
+        'notes': 'Baseline target list (curated + community-source built-in/custom). '
                  'Full library incl. community rules lives in '
                  'config/generated/targets.merged.json (pass -ConfigPath to the engine).',
         'targets': baseline,
@@ -560,7 +566,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', default=root)
     ap.add_argument('--baseline-out',
-                    default=os.path.join(root, 'config', 'targets.json'))
+                    default=os.path.join(root, 'config', 'generated', 'baseline.json'))
     args = ap.parse_args()
     return run(args.root, os.path.normpath(args.baseline_out))
 

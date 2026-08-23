@@ -1,7 +1,7 @@
 {
   "version": 2,
   "drive": "C",
-  "notes": "win-c-clear-skill builtin whitelist. Editable per machine. Paths MUST use environment variables (%LOCALAPPDATA%/%APPDATA%/%USERPROFILE%/%TEMP%/%ProgramData%/%WinDir%/%ProgramFiles%) for portability. mergeSources points to the bundled assets/rules (relative to this file). externalMergeSources is optional: add ABSOLUTE paths to a local c_cleaner_plus install if you have one; leave empty for portable/GitHub use.",
+  "notes": "win-c-clear-skill builtin whitelist. Editable per machine. Paths MUST use environment variables (%LOCALAPPDATA%/%APPDATA%/%USERPROFILE%/%TEMP%/%ProgramData%/%WinDir%/%ProgramFiles%) for portability. mergeSources points to the bundled assets/rules (relative to this file). externalMergeSources is optional: add ABSOLUTE paths to a local rule-source directory if you have one; leave empty for portable/GitHub use.",
   "mergeSources": [
     "..\\assets\\rules"
   ],
@@ -993,7 +993,7 @@
       "glob": "setupapi*.log",
       "stopProcesses": [],
       "stopServices": [],
-      "risk": "Device/driver installation logs under %WinDir%\\inf. Only setupapi*.log files are matched and removed; driver INF files are never touched (guardrail-enforced)."
+      "risk": "BLOCKED BY ENGINE GUARDRAIL: %WinDir%\\inf is a protected path (driver INF store), so this target always returns blocked-by-guardrail and deletes nothing. Kept for documentation only; clear setupapi logs via Disk Cleanup if needed."
     },
     {
       "id": "font-cache",

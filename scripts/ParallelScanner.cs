@@ -91,9 +91,12 @@ public static class ParallelScanner
                 {
                     var parts = budgets[idx].Split(':');
                     int d, f, dr;
-                    if (parts.Length >= 1 && int.TryParse(parts[0], out d)  && d  > 0) bd  = d;
-                    if (parts.Length >= 2 && int.TryParse(parts[1], out f)  && f  > 0) bf  = f;
-                    if (parts.Length >= 3 && int.TryParse(parts[2], out dr) && dr > 0) bdr = dr;
+                    // files/dirs: 显式 0 = unlimited（下游用 maxFiles > 0 守卫，语义成立）；
+                    // depth: 保持 > 0 —— Recurse 用 depth > maxDepth 判断，传 0 会变成
+                    // "只扫根目录"而非无限，故不接受显式 0 覆盖预设。
+                    if (parts.Length >= 1 && int.TryParse(parts[0], out d)  && d  > 0)  bd  = d;
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out f)  && f  >= 0) bf  = f;
+                    if (parts.Length >= 3 && int.TryParse(parts[2], out dr) && dr >= 0) bdr = dr;
                 }
 
                 tasks[idx] = Task.Run(() =>
@@ -154,8 +157,17 @@ public static class ParallelScanner
 
             if (!string.IsNullOrEmpty(glob))
             {
+                // glob 分支同样受取消与文件预算约束；Files 如实计数供调用方审计。
+                long gBytes = 0, gFiles = 0;
                 foreach (var f in di.EnumerateFiles(glob, SearchOption.TopDirectoryOnly))
-                    result.Bytes += f.Length;
+                {
+                    if (cts.Token.IsCancellationRequested) { result.Cancelled = true; break; }
+                    gBytes += f.Length;
+                    gFiles++;
+                    if (maxFiles > 0 && gFiles >= maxFiles) { result.BudgetHit = true; break; }
+                }
+                result.Bytes = gBytes;
+                result.Files = gFiles;
                 return result;
             }
 
@@ -181,7 +193,10 @@ public static class ParallelScanner
 
             long totalBytes = rootFileBytes;
             long totalFiles = rootFileCount;
-            long dirCount   = subDirNames.Count;
+            // 不从 subDirNames.Count 预计数：每个子目录的自身计数已由 Recurse 返回的
+            // Dirs（含 self=1）累加，预计数会导致一级子目录被 double-count，使 maxDirs
+            // 预算提前触发、兄弟目录被漏扫。
+            long dirCount = 0;
 
             if (maxDirs > 0 && dirCount >= maxDirs)
             {
@@ -251,7 +266,12 @@ public static class ParallelScanner
                                           int maxFiles, int maxDirs, CancellationTokenSource cts)
     {
         var result = new ScanOneResult();
-        if (depth > maxDepth) { result.BudgetHit = true; return result; }
+        // Depth cap is a TRAVERSAL limit, not a budget event. Flagging BudgetHit here made every
+        // ancestor treat the whole branch as exhausted and BREAK out of its remaining-sibling
+        // loops, so one deep chain (e.g. node_modules-style nesting vs the standard depth-6
+        // preset) truncated or zeroed the measured size of unrelated sibling subtrees. Just stop
+        // descending; siblings continue and file/dir-count budgets remain the only BudgetHit.
+        if (depth > maxDepth) { return result; }
 
         long fileCount = 0, dirCount = 1;
         long bytes = 0;

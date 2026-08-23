@@ -3,6 +3,10 @@ config/targets.merged.json
 config/user-overrides.json
 config/scan-cache.json
 
+# Rule-refresh working dirs (fetched/merged by tools/fetch_rules.py + merge_rules.py)
+config/generated/
+config/source/
+
 # Runtime output (audit logs / quarantine / dangerous-tier backups — portable, machine-local)
 logs/
 quarantine/

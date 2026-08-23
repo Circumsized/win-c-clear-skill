@@ -2,6 +2,12 @@
 
 > 游戏平台 / 启动器的下载落地缓存、嵌入式浏览器缓存与日志。
 
+> ⚠️ **本表「评级」列不是引擎的实际分级。** 它由 `merge_rules.classify_tier`
+> （独立的 Python 关键词启发式）生成，与引擎的 `Get-AutoTier` 双向分歧：例如含
+> `User Data` 或 `dxcache` 的路径在此偏严（caution/dangerous），引擎按末段 `cache`
+> 判 **safe** 并默认启用；`cookies`/`history` 在此偏松（caution），引擎判 **dangerous**。
+> 真实分级与 enabled 状态以 `config/targets.merged.json` 或 `-Mode Scan` 输出为准。
+
 | 名称 | 路径 | 类型 | 评级 | 需管理员 | 说明 |
 |------|------|------|------|---------|------|
 | Battle.net 日志 | `%PROGRAMDATA%\Battle.net\Agent\Logs` | dir | 🟢 safe (安全) | 是 | Battle.net Agent 日志 |
@@ -50,4 +56,5 @@
 | 🟡 caution（谨慎） | 0 |
 | 🔴 dangerous（危险） | 0 |
 
-共 38 条规则。safe 默认启用，caution/dangerous 需 `-ConfirmIds` 显式确认。
+共 38 条规则。引擎的实际默认启用规则是「引擎判定为 safe 且未被护栏降级」，
+与本表评级不一定一致（见文首警告）；caution/dangerous 一律需 `-ConfirmIds` 显式确认。

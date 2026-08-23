@@ -4,7 +4,7 @@
   win-c-clear-skill engine: scan / clean / analyze / merge-config for Windows C: drive caches.
 .DESCRIPTION
   Agent-adaptive C: drive cleanup engine with three-tier risk model, scan-before-delete,
-  c_cleaner_plus rule merge pipeline, runspace-parallel scanning, elevation with result
+  community rule merge pipeline, runspace-parallel scanning, elevation with result
   pass-back, and a stable JSON_SUMMARY contract for agent parsing.
   Console output is English (encoding stability). The agent translates for the user.
 .PARAMETER Mode
@@ -32,7 +32,7 @@
 .PARAMETER TrimWorkingSet
   After clean, trim working set (EmptyWorkingSet) of processes named in cleaned targets
 .PARAMETER CCPDirs
-  Comma-separated c_cleaner_plus rule directories (overrides config mergeSources)
+  Comma-separated community rule directories (overrides config mergeSources)
 .PARAMETER ResultFile
   Internal: path where an elevated child writes its JSON_SUMMARY back to the parent
 .PARAMETER ReportFile
@@ -65,7 +65,7 @@ param(
   [string]$RecoveryMode = 'permanent',
   [int]$HotMinutes = 30,
   [string]$RuleSets = 'minimal',
-  [ValidateSet('fast','standard','deep')]
+  [ValidateSet('fast','standard','deep','diagnostic')]
   [string]$ScanMode = 'standard',
   [switch]$NoMft,
   [string]$PlanFile = '',
@@ -77,6 +77,9 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
+# 提前初始化路径过滤统计（MergeConfig 早退分支生成的报告也会引用这两个变量）
+$whitelistSkipped = 0
+$blacklistSkipped = 0
 $Script:StartedAt = Get-Date
 # UTF-8 console output so JSON_SUMMARY parses correctly regardless of system codepage
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -99,7 +102,7 @@ function Expand-EnvPath([string]$PathText) {
   $t = $PathText
   if ($t.IndexOf('%') -ge 0) {
     # robust route: expand using Process -> Machine -> User env lookups
-    foreach ($name in @('LOCALAPPDATA','APPDATA','USERPROFILE','TEMP','TMP','ProgramData','WinDir','ProgramFiles','ProgramFiles(x86)','SystemDrive','PUBLIC','HOMEDRIVE','HOMEPATH')) {
+    foreach ($name in @('LOCALAPPDATA','APPDATA','USERPROFILE','TEMP','TMP','ProgramData','WinDir','ProgramFiles','ProgramFiles(x86)','SystemDrive','PUBLIC','HOMEDRIVE','HOMEPATH','OneDrive','OneDriveConsumer','OneDriveCommercial')) {
       $v = [Environment]::GetEnvironmentVariable($name, 'Process')
       if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'Machine') }
       if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'User') }
@@ -141,7 +144,7 @@ function ConvertTo-NormPath([string]$RawPath) {
   if ([string]::IsNullOrWhiteSpace($full)) { return '' }
   # Longest-prefix env replacement wins (TEMP before LOCALAPPDATA before USERPROFILE ...)
   $map = @{}
-  foreach ($name in @('LOCALAPPDATA','APPDATA','USERPROFILE','TEMP','TMP','ProgramData','WinDir','ProgramFiles','ProgramFiles(x86)','SystemDrive','PUBLIC')) {
+  foreach ($name in @('LOCALAPPDATA','APPDATA','USERPROFILE','TEMP','TMP','ProgramData','WinDir','ProgramFiles','ProgramFiles(x86)','SystemDrive','PUBLIC','OneDrive','OneDriveConsumer','OneDriveCommercial')) {
     $v = [Environment]::GetEnvironmentVariable($name, 'Process')
     if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'Machine') }
     if (-not $v) { $v = [Environment]::GetEnvironmentVariable($name, 'User') }
@@ -290,7 +293,11 @@ function Test-PathAgainstWhitelist([string]$Path, [string[]]$WhitelistPaths) {
     $wpLower = $wp.ToLowerInvariant()
     if ($lower -eq $wpLower -or $lower.StartsWith($wpLower + '\')) { return $true }
     # handle wildcards in whitelist (e.g., %LOCALAPPDATA%\Packages\*\TempState)
-    if ($wpLower -like '*\*') {
+    # NOTE: the test must be "does this entry contain an asterisk". `-like '*\*'` does NOT do
+    # that — in wildcard syntax it means "anything, a literal backslash, anything", i.e. it is
+    # true for every path containing a separator. Use an explicit IndexOf on '*' instead, so
+    # this helper matches Test-WhitelistFast (the function the engine actually uses).
+    if ($wpLower.IndexOf('*') -ge 0) {
       $pattern = '^' + [regex]::Escape($wpLower).Replace('\*', '.*') + '$'
       if ($lower -match $pattern) { return $true }
     }
@@ -405,6 +412,13 @@ $Script:GuardPatterns = @(
   '\\windows\\servicing($|\\)',
   '\\windows\\installer($|\\)',
   '^%windir%\\installer($|\\)',
+  # Normalized (%WINDIR%\...) counterparts: ConvertTo-NormPath rewrites C:\Windows\X to
+  # %WINDIR%\X, so absolute-form-only patterns above would NOT match at the deletion point.
+  # Without these, the delete-time guard was weaker than the scan-time guard (asymmetry bug).
+  '^%windir%\\servicing($|\\)',
+  '^%windir%\\inf($|\\)',
+  '^%windir%\\boot($|\\)',
+  '^[a-z]:\\windows\\boot($|\\)',
   # Registry hives & system32 core
   '\\system32\\config($|\\)',
   '\\system32\\drivers($|\\)',
@@ -427,6 +441,12 @@ $Script:GuardPatterns = @(
   'swapfile\.sys$',
   'hiberfil\.sys$',
   'dumpstack\.log\.tmp$',
+  # WSL / Hyper-V / Docker / VM virtual disks (user data, never "junk")
+  '\.(vhdx|vhd|avhdx|avhd|vdi|vmdk|qcow2)$',
+  '\\ext4\.vhdx$',
+  '\\wsl($|\\)',
+  '\\dockerdesktop($|\\)',
+  '\\docker\\wsl($|\\)',
   # User registry hives
   'ntuser\.dat',
   'usrclass\.dat',
@@ -449,13 +469,35 @@ $Script:GuardPatterns = @(
   '^%programfiles%($|\\)',
   '^%programfiles\(x86\)%($|\\)',
   # Previous Windows installation
-  '\\windows\.old($|\\)'
+  '\\windows\.old($|\\)',
+  # Drive root guard: cover all three forms — normalized (%SystemDrive%), expanded (C:\),
+  # and bare (C:). ConvertTo-NormPath rewrites 'C:\'/'C:' to '%SystemDrive%', so match each.
+  '^[a-z]:\\$',
+  '^[a-z]:$',
+  '^%systemdrive%$',
+  # Path traversal: reject any '..' segment. A rule like '%X%\..\..\Windows\System32'
+  # would else pass the anchored guards (string mismatch) yet resolve to C:\Windows\System32 at delete.
+  '(^|\\)\.\.($|\\)',
+  # Trailing dot/space aliases: Windows strips these on resolution ('C:\Windows.' == 'C:\Windows'),
+  # so an anchored guard like '^[a-z]:\windows$' would not match the dotted/spaced form.
+  '\.$',
+  '\s$'
 )
 function Test-GuardrailBlocked([string]$NormPath) {
   if ([string]::IsNullOrWhiteSpace($NormPath)) { return $false }
+  # 预编译护栏正则并复用：PowerShell 的 -match 走静态 15 槽正则缓存，轮询 55+ 个不同
+  # pattern 会持续驱逐 → 每次 nearly 重编译（Analyze 回退路径 + 删除点护栏断言的热点）。
+  if (-not $Script:GuardRx) {
+    $rxList = [System.Collections.Generic.List[regex]]::new()
+    foreach ($p in @($Script:GuardPatterns)) {
+      try { [void]$rxList.Add([regex]::new($p, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Compiled)) }
+      catch { Write-Warning ("Guard regex failed to compile (dropped): {0}" -f $p) }
+    }
+    $Script:GuardRx = $rxList
+  }
   $lower = $NormPath.ToLowerInvariant()
-  foreach ($pat in $Script:GuardPatterns) {
-    if ($lower -match $pat) { return $true }
+  foreach ($rx in $Script:GuardRx) {
+    if ($rx.IsMatch($lower)) { return $true }
   }
   return $false
 }
@@ -551,22 +593,19 @@ function Get-MagicType([string]$Path) {
   try {
     $fs = [System.IO.File]::OpenRead($Path)
     try {
-      $b = New-Object byte[] 8
-      $n = $fs.Read($b, 0, 8)
+      $b = New-Object byte[] 16
+      $n = $fs.Read($b, 0, 16)
       if ($n -lt 4) { return '' }
       if ($b[0] -eq 0x4D -and $b[1] -eq 0x5A) { return 'executable' }                       # MZ
       if ($b[0] -eq 0x50 -and $b[1] -eq 0x4B) { return 'zip-archive' }                        # PK
       if ($b[0] -eq 0x52 -and $b[1] -eq 0x61 -and $b[2] -eq 0x72 -and $b[3] -eq 0x21) { return 'rar-archive' }
       if ($b[0] -eq 0x37 -and $b[1] -eq 0x7A -and $b[2] -eq 0xBC -and $b[3] -eq 0xAF) { return '7z-archive' }
-      if ($n -ge 16) {
+      if ($n -ge 6) {
         $head = [System.Text.Encoding]::ASCII.GetString($b[0..3])
         $head2 = [System.Text.Encoding]::ASCII.GetString($b[0..5])
-        $fs.Seek(0, 'Begin') | Out-Null
-        $b16 = New-Object byte[] 16
-        [void]$fs.Read($b16, 0, 16)
         if ($head2 -eq 'SQLite') { return 'sqlite-database' }
         if ($head -eq '%PDF') { return 'pdf' }
-        if ([System.Text.Encoding]::ASCII.GetString($b16[0..5]) -eq 'GIF89a') { return 'image' }
+        if ($head2 -eq 'GIF89a') { return 'image' }
       }
       return ''
     } finally { $fs.Dispose() }
@@ -579,17 +618,40 @@ $Script:RiskyExtPattern = [regex]'(?i)\.(exe|dll|sys|msi|bat|cmd|ps1|vbs|js|jar|
 function Test-RiskyExtension([string]$Path) { return $Script:RiskyExtPattern.IsMatch($Path) }
 
 # ============================================================
+# Reparse-point fence (junction / symlink / mount point).
+# RED LINE: Windows PowerShell 5.1's `Remove-Item -Recurse` TRAVERSES directory junctions and
+# deletes the link TARGET's contents. Cache directories are very commonly junctioned to another
+# drive (Analyze mode of this very skill suggests migrate/junction as the preferred alternative
+# to deletion), so a recursive delete that ignores reparse points can destroy off-C: user data.
+# Rule: never recurse through a link. Only ever remove the link itself.
+# ============================================================
+function Test-IsReparsePoint($FsItem) {
+  if ($null -eq $FsItem) { return $false }
+  try { return ((([int]$FsItem.Attributes) -band ([int][System.IO.FileAttributes]::ReparsePoint)) -ne 0) }
+  catch { return $false }
+}
+function Remove-ReparsePointOnly($FsItem) {
+  # Deletes the link entry without following it (Directory.Delete(path,false) never recurses).
+  try {
+    if ($FsItem.PSIsContainer) { [System.IO.Directory]::Delete($FsItem.FullName, $false) }
+    else { [System.IO.File]::Delete($FsItem.FullName) }
+    if (Test-Path -LiteralPath $FsItem.FullName) { return 'locked' }
+    return 'ok'
+  } catch { return 'locked' }
+}
+
+# ============================================================
 # Config merge pipeline (MergeConfig mode)
 # Steps: discover -> parse -> normalize -> dedupe -> tier -> merge -> persist
 # Source classes (policy):
-#   curated   : hand-curated c_cleaner_plus rules (rules_*, common_custom_rules) - safe tier auto-enabled
+#   curated   : hand-curated community rules (rules_*, common_custom_rules) - safe tier auto-enabled
 #   community : fresh upstream dumps (winapp2_latest, community_cleaners,
 #               cdisk_cleaner_custom_rules) - ALWAYS disabled (opt-in)
 #   state     : cdisk_cleaner_config app-state export (checkbox states)        - user state wins
 # ============================================================
 function Get-SourceClass([string]$FileName) {
   $n = $FileName.ToLowerInvariant()
-  # fresh upstream dumps (winapp2 v260730 / BleachBit cleaners) + c_cleaner_plus custom-rule exports: opt-in only
+  # fresh upstream dumps (winapp2 v260730 / BleachBit cleaners) + community custom-rule exports: opt-in only
   if ($n -like 'winapp2_latest*' -or $n -like 'community_cleaners*' -or $n -like 'cdisk_cleaner_custom_rules*') { return 'community' }
   # only the app-state config (double-encoded checkbox states) carries real user intent
   if ($n -like 'cdisk_cleaner_config*') { return 'state' }
@@ -608,6 +670,20 @@ function Get-CategoryForSource([string]$FileName) {
   if ($n -like 'winapp2_latest*' -or $n -like 'community_cleaners*') { return 'community' }
   if ($n -like 'cdisk_cleaner*') { return 'system' }
   return 'general'
+}
+# Portable metadata helper: express $TargetPath relative to $BaseDir when it lies
+# inside that subtree; otherwise return it unchanged. Keeps generated artifacts
+# (targets.merged.json) free of machine-specific absolute paths (drive letter,
+# install location, username) so the skill works identically on any PC.
+function Get-RelativePath([string]$BaseDir, [string]$TargetPath) {
+  try {
+    $base = ([string]$BaseDir).TrimEnd('\')
+    $target = [string]$TargetPath
+    if ($base -and $target -and $target.StartsWith($base + '\', [StringComparison]::OrdinalIgnoreCase)) {
+      return $target.Substring($base.Length + 1)
+    }
+  } catch {}
+  return $TargetPath
 }
 function Invoke-ConfigMerge {
   param(
@@ -686,7 +762,16 @@ function Invoke-ConfigMerge {
           $name = [string]$arr[0]
           $rawPath = [string]$arr[1]
           $entryType = ([string]$arr[2]).ToLowerInvariant()
-          if ($entryType -ne 'dir' -and $entryType -ne 'file' -and $entryType -ne 'glob') { $entryType = 'dir' }
+          # Unsupported types must NOT be silently promoted to a full-directory delete.
+          # fetch_rules.py emits "contents" (delete files, keep tree) and uses it as a
+          # deliberate app-root guard ("must never become a plain dir delete target").
+          # Coercing it to 'dir' erased that upstream protection, so flag it and force it
+          # onto the conservative path instead.
+          $unsupportedType = ''
+          if ($entryType -ne 'dir' -and $entryType -ne 'file' -and $entryType -ne 'glob') {
+            $unsupportedType = $entryType
+            $entryType = 'dir'
+          }
           $requiresAdmin = $false
           $meta = ''
           $globPattern = ''
@@ -694,6 +779,10 @@ function Invoke-ConfigMerge {
             $requiresAdmin = [bool]$arr[3]
             if ($arr.Count -ge 5 -and $arr[4] -is [string]) { $meta = [string]$arr[4] }
             if ($arr.Count -ge 6 -and $arr[5] -is [bool] -and $arr[5]) { $meta = ('[advanced] ' + $meta) }
+            # 7-tuple form [name,path,type,bool,meta,bool,glob] (used by rules_ai_tools.json):
+            # the glob lives at index 6 in THIS branch. Missing it dropped the pattern and turned
+            # "delete *.lock" into "delete every child of the directory".
+            if ($arr.Count -ge 7 -and $arr[6] -is [string]) { $globPattern = [string]$arr[6] }
           } elseif ($arr.Count -ge 4 -and $arr[3] -is [string]) {
             $meta = [string]$arr[3]
             if ($arr.Count -ge 5 -and $arr[4] -is [bool]) { $requiresAdmin = [bool]$arr[4] }
@@ -710,6 +799,9 @@ function Invoke-ConfigMerge {
           # guardrail: protected system paths are demoted to dangerous+disabled, never guess-safe
           $guardBlocked = Test-GuardrailBlocked $norm
           if ($guardBlocked) { $tier = 'dangerous' }
+          # unsupported source type (e.g. BleachBit "contents"): the upstream converter used it to
+          # express "do NOT wipe this whole directory". Honour that intent conservatively.
+          if ($unsupportedType) { $tier = 'dangerous' }
           # enable policy by source class
           $enabled = $null
           if ($srcClass -eq 'community') { $enabled = $false }                    # opt-in only
@@ -718,6 +810,7 @@ function Invoke-ConfigMerge {
           if ($null -eq $enabled) { $enabled = ($tier -eq 'safe') }
           if ($tier -eq 'dangerous') { $enabled = $false }
           if ($guardBlocked) { $meta = ('[guardrail:protected-path] ' + $meta) }
+          if ($unsupportedType) { $meta = ('[unsupported-type:' + $unsupportedType + '] ' + $meta) }
 
           if ($ccpEntries.ContainsKey($normLower)) {
             $ex = $ccpEntries[$normLower]
@@ -725,9 +818,33 @@ function Invoke-ConfigMerge {
             if ((Get-TierRank $tier) -gt (Get-TierRank $ex.tier)) { $ex.tier = $tier }
             # state sources may enable/disable; community/curated duplicates never override first-wins
             if ($srcClass -eq 'state') { $ex.enabled = $enabled }
-            if (-not $ex.sources -contains $f.Name) { $ex.sources = @($ex.sources + $f.Name) }
+            # NOTE precedence: unary -not binds tighter than -contains, so the old
+            # `-not $ex.sources -contains $f.Name` evaluated as `($false) -contains $name`
+            # => always false => provenance was never appended. Parentheses are required.
+            if (-not ($ex.sources -contains $f.Name)) { $ex.sources = @($ex.sources + $f.Name) }
             if (-not $ex.meta -and $meta) { $ex.meta = $meta }
-            if ($guardBlocked) { $ex.meta = ('[guardrail:protected-path] ' + $ex.meta) }
+            # Idempotent annotation: this branch runs once per duplicate occurrence of the same
+            # normalized path, and the vendored state export contains every entry twice, so an
+            # unguarded prepend produced strings like
+            # "[guardrail:protected-path] [guardrail:protected-path] ..." (2477 markers over 1338
+            # entries in the shipped artifact). Only annotate when not already annotated.
+            if ($guardBlocked -and -not ([string]$ex.meta).Contains('[guardrail:protected-path]')) {
+              $ex.meta = ('[guardrail:protected-path] ' + $ex.meta)
+            }
+            if ($unsupportedType) {
+              $ex.tier = 'dangerous'
+              if (-not ([string]$ex.meta).Contains('[unsupported-type:')) {
+                $ex.meta = ('[unsupported-type:' + $unsupportedType + '] ' + $ex.meta)
+              }
+            }
+            # RED LINE re-assert (defence in depth): "dangerous => always disabled" must hold on the
+            # MERGED entry, not just on the row being processed. The tier kept here is the more
+            # conservative of the two, and a state row's enable override is computed against its OWN
+            # tier — so a state row whose tier is safe could otherwise switch on an entry that another
+            # source had already classified dangerous. Never rely on tier being a pure function of the
+            # path; re-check the surviving tier after every override.
+            if ($ex.tier -eq 'dangerous') { $ex.enabled = $false }
+            if (Test-GuardrailBlocked $ex.normPath) { $ex.tier = 'dangerous'; $ex.enabled = $false }
           } else {
             $ccpEntries[$normLower] = @{
               normPath = $norm
@@ -811,10 +928,43 @@ function Invoke-ConfigMerge {
     })
   }
 
+  # ------------------------------------------------------------------------------
+  # FINAL INVARIANT SWEEP (red line, defence in depth).
+  # Whatever combination of source class, dedupe order, tier promotion or state override produced
+  # these entries, the persisted artifact must satisfy:
+  #     tier == 'dangerous'            => enabled == $false
+  #     guardrail-protected path       => tier == 'dangerous' AND enabled == $false
+  # Enforcing it once here means no future edit to the per-row logic above can silently ship an
+  # enabled dangerous target. Violations are counted so a regression is visible, not just fixed.
+  # NOTE builtin targets are included on purpose: a hand-edited targets.json is a real source of
+  # "dangerous + enabled" and this is the cheapest place to catch it.
+  # ------------------------------------------------------------------------------
+  $invariantFixed = 0
+  foreach ($mt in $mergedTargets) {
+    $forced = $false
+    foreach ($p in @($mt.paths)) {
+      if (Test-GuardrailBlocked ([string]$p)) { $forced = $true; break }
+    }
+    if ($forced -and [string]$mt.tier -ne 'dangerous') { $mt.tier = 'dangerous' }
+    if ((([string]$mt.tier) -eq 'dangerous' -or $forced) -and [bool]$mt.enabled) {
+      $mt.enabled = $false
+      $invariantFixed++
+      if (-not ([string]$mt.risk).Contains('[invariant:forced-disable]')) {
+        $mt.risk = '[invariant:forced-disable] ' + [string]$mt.risk
+      }
+    }
+  }
+  if ($invariantFixed -gt 0) {
+    Write-Host ("[GUARD] merge invariant forced {0} dangerous/protected target(s) back to enabled:false" -f $invariantFixed) -ForegroundColor Yellow
+  }
+
   $merged = [ordered]@{
     version = 1
     generatedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-    builtinConfig = $BuiltinConfigPath
+    # Portable: store the builtin config as a path relative to the merged file's
+    # directory (they live side by side in config/), so the artifact carries no
+    # machine-specific absolute path (drive letter / install location / username).
+    builtinConfig = (Get-RelativePath (Split-Path -Parent $OutMergedPath) $BuiltinConfigPath)
     sources = $sourceStats
     stats = [ordered]@{
       discovered = $totalDiscovered
@@ -825,6 +975,9 @@ function Invoke-ConfigMerge {
       builtinTargets = @($builtin.targets).Count
       totalMergedTargets = $mergedTargets.Count
       guardrailDemoted = @($mergedTargets | Where-Object { ([string]$_.risk).Contains('[guardrail:protected-path]') }).Count
+      invariantForcedDisable = $invariantFixed
+      unsupportedTypeEntries = @($mergedTargets | Where-Object { ([string]$_.risk).Contains('[unsupported-type:') }).Count
+      dangerousEnabledViolations = @($mergedTargets | Where-Object { [string]$_.tier -eq 'dangerous' -and [bool]$_.enabled }).Count
       tierHistogram = [ordered]@{
         safe = @($mergedTargets | Where-Object { $_.tier -eq 'safe' }).Count
         caution = @($mergedTargets | Where-Object { $_.tier -eq 'caution' }).Count
@@ -877,7 +1030,7 @@ function Get-CCPDirsFromConfig($cfg, [string]$CCPDirsParam, [string]$BaseDir) {
       if (Test-Path -LiteralPath $p) { $dirs.Add($p) }
     }
   }
-  # optional external upgrade sources (e.g. original c_cleaner_plus download dirs)
+  # optional external upgrade sources (e.g. local rule-export download dirs)
   if ($cfg.PSObject.Properties['externalMergeSources'] -and $cfg.externalMergeSources) {
     foreach ($s in @($cfg.externalMergeSources)) {
       $p = [string]$s
@@ -928,6 +1081,11 @@ function Measure-One([string]$Path, [string]$GlobPattern) {
   try {
     if (-not (Test-Path -LiteralPath $Path)) { return @{ bytes = 0; denied = $false } }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    # RED LINE (reparse fence): never measure through a junction/symlink — the C# scanner
+    # refuses reparse roots and skips reparse children; this PowerShell fallback must agree,
+    # or fallback runs silently report link-target bytes as cache size.
+    # (Inline attribute check: this script body runs in a bare runspace without engine helpers.)
+    if ((([int]$item.Attributes) -band ([int][System.IO.FileAttributes]::ReparsePoint)) -ne 0) { return @{ bytes = 0; denied = $false } }
     if ($item -is [System.IO.FileInfo]) { return @{ bytes = [int64]$item.Length; denied = $false } }
     if ($GlobPattern) {
       try { foreach ($f in $item.EnumerateFiles($GlobPattern)) { $bytes += $f.Length } }
@@ -941,7 +1099,12 @@ function Measure-One([string]$Path, [string]$GlobPattern) {
       $di = $stack.Pop()
       try { foreach ($fi in $di.EnumerateFiles()) { $bytes += $fi.Length } }
       catch { if ($isRoot) { $denied = $true } }
-      try { foreach ($sd in $di.EnumerateDirectories()) { $stack.Push($sd) } }
+      try {
+        foreach ($sd in $di.EnumerateDirectories()) {
+          # skip junctions/symlinks exactly like ParallelScanner.cs does
+          if ((($sd.Attributes) -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { $stack.Push($sd) }
+        }
+      }
       catch { if ($isRoot) { $denied = $true } }
       $isRoot = $false
     }
@@ -986,7 +1149,9 @@ function Invoke-MeasureParallel {
           $keys.Add([string]$it.k); $paths.Add([string]$it.p); $globs.Add([string]$it.g)
         }
       }
-      $scanModeEnum = [ScanMode]$ScanMode
+      # 'diagnostic' is an engine-only audit mode; the C# scanner has no Diagnostic enum
+      # member, so map it to Deep (unlimited files/dirs) for measurement purposes.
+      $scanModeEnum = [ScanMode]$(if ($ScanMode -eq 'diagnostic') { 'Deep' } else { $ScanMode })
       $r = [ParallelScanner]::Scan($paths.ToArray(), $globs.ToArray(), $ThreadCount, $null, $scanModeEnum)
       for ($i = 0; $i -lt $keys.Count; $i++) {
         $results[$keys[$i]] = @{ bytes = [int64]$r.Sizes[$i]; denied = ($r.Denied[$i] -eq 1) }
@@ -1000,6 +1165,7 @@ function Invoke-MeasureParallel {
           elseif ($out -match 'Bytes\s*:\s*(\d+)') { $results[$keys[$i]] = @{ bytes = [int64]$Matches[1]; denied = $false } }
         }
       }
+      if ($prevPrio) { try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = $prevPrio } catch {} }
       return $results
     }
   } catch {
@@ -1070,6 +1236,13 @@ function Clear-OnePath {
 
   # --- single file ---
   $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  # RED LINE (reparse fence): the target path itself is a junction/symlink. Enumerating or
+  # recursing through it would operate on the LINK TARGET (e.g. a cache dir the user junctioned
+  # to D:), so refuse outright — a cleanup rule must never delete data behind a link.
+  if ((Test-IsReparsePoint $item)) {
+    $script:LastRiskSkipped = 1
+    return 'reparse'
+  }
   if ($item -is [System.IO.FileInfo]) {
     if ($item.LastWriteTime -gt $hotCutoff) { $script:LastHotSkipped = 1; return 'hot' }
     if ($Mode -eq 'permanent' -and $Tier -ne 'dangerous' -and $TargetOrigin -ne 'builtin' -and (Test-RiskyExtension $Path)) {
@@ -1091,6 +1264,12 @@ function Clear-OnePath {
       if (Test-GuardrailBlocked $f.FullName) { $script:LastRiskSkipped++; continue }
       if ($f.LastWriteTime -gt $hotCutoff) { $script:LastHotSkipped++; continue }
       if ($Mode -eq 'permanent' -and $Tier -ne 'dangerous' -and $TargetOrigin -ne 'builtin' -and (Test-RiskyExtension $f.FullName)) { $script:LastRiskSkipped++; continue }
+      # RED LINE (reparse fence): remove a matching link as a LINK ONLY, never through it.
+      if (Test-IsReparsePoint $f) {
+        $r = Remove-ReparsePointOnly $f
+        if ($r -ne 'ok') { $locked++ }
+        continue
+      }
       if ($Mode -eq 'quarantine') { $r = Move-FileToQuarantine $f.FullName $QuarantineRoot; if ($r -ne 'ok') { $locked++ }; continue }
       if ($Mode -eq 'recycle') { $r = Send-ToRecycleBin $f.FullName $false; if ($r -ne 'ok') { $locked++ }; continue }
       Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
@@ -1108,6 +1287,13 @@ function Clear-OnePath {
     if (Test-GuardrailBlocked $c.FullName) { $script:LastRiskSkipped++; continue }
     if ($c.LastWriteTime -gt $hotCutoff) { $script:LastHotSkipped++; continue }
     if ($Mode -eq 'permanent' -and $Tier -ne 'dangerous' -and $TargetOrigin -ne 'builtin' -and (Test-RiskyExtension $c.FullName)) { $script:LastRiskSkipped++; continue }
+    # RED LINE (reparse fence): a child junction/symlink is removed as a LINK ONLY. Never
+    # Remove-Item -Recurse it — PS 5.1 follows the link and would wipe the target's contents.
+    if (Test-IsReparsePoint $c) {
+      $r = Remove-ReparsePointOnly $c
+      if ($r -ne 'ok') { $locked++ }
+      continue
+    }
     if ($Mode -eq 'quarantine') { $r = Move-FileToQuarantine $c.FullName $QuarantineRoot; if ($r -ne 'ok') { $locked++ }; continue }
     if ($Mode -eq 'recycle') { $r = Send-ToRecycleBin $c.FullName ($c.PSIsContainer); if ($r -ne 'ok') { $locked++ }; continue }
     Remove-Item -LiteralPath $c.FullName -Recurse -Force -ErrorAction SilentlyContinue
@@ -1175,16 +1361,30 @@ function Backup-TargetPaths {
   $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
   $backupRoot = Join-Path $base ("win-c-clear-skill_backup_{0}_{1}" -f $Id, $stamp)
   New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+  # Same-volume backup neither frees space nor survives a volume-level problem. Say so loudly:
+  # a "backed up" claim that lands on the very drive being cleaned is misleading protection.
+  $bkRootQual = [System.IO.Path]::GetPathRoot($backupRoot)
   $copied = 0
   foreach ($p in $Paths) {
     if (-not (Test-Path -LiteralPath $p)) { continue }
     try {
+      # Copy-Item -Recurse FOLLOWS reparse points, so backing up a junctioned path would pull in
+      # the link target's whole tree (potentially many GB on another drive) under the pretext of a
+      # "backup". Refuse and say so rather than silently copying somebody else's data.
+      $srcItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+      if (Test-IsReparsePoint $srcItem) {
+        Write-Host ("  [WARN] skipping backup of {0}: it is a junction/symlink; backing it up would copy the link target's tree. Copy the real location manually if you need it." -f $p) -ForegroundColor Yellow
+        continue
+      }
+      if ([System.IO.Path]::GetPathRoot($p) -eq $bkRootQual) {
+        Write-Host ("  [WARN] backup of {0} stays on the SAME volume ({1}); it frees no space and is not off-drive protection. Copy it elsewhere before deleting." -f $Id, $bkRootQual.TrimEnd('\')) -ForegroundColor Yellow
+      }
       $leaf = Split-Path -Leaf $p
       Copy-Item -LiteralPath $p -Destination (Join-Path $backupRoot $leaf) -Recurse -Force -ErrorAction Stop
       $copied++
     } catch {}
   }
-  return @{ path = $backupRoot; copied = $copied }
+  return @{ path = $backupRoot; copied = $copied; sameVolume = $bkRootQual }
 }
 
 function Get-RunningProcessNames([string[]]$Names) {
@@ -1197,10 +1397,22 @@ function Get-RunningProcessNames([string[]]$Names) {
 
 function Invoke-TrimWorkingSet([string[]]$ProcNames) {
   $report = @()
+  # Documented contract: "never system-critical processes". That claim was previously unenforced —
+  # the function trimmed whatever a target's stopProcesses happened to name. Keep an explicit
+  # deny-list so the documentation and the behaviour agree.
+  $critical = @(
+    'system', 'idle', 'registry', 'memory compression', 'smss', 'csrss', 'wininit', 'winlogon',
+    'services', 'lsass', 'lsaiso', 'svchost', 'dwm', 'fontdrvhost', 'audiodg', 'sihost',
+    'ctfmon', 'taskhostw', 'trustedinstaller', 'msmpeng', 'securityhealthservice'
+  )
   try {
     Add-Type -Name NativePsapi -Namespace Win32 -MemberDefinition '[DllImport("psapi.dll")] public static extern int EmptyWorkingSet(IntPtr hProcess);' -ErrorAction Stop
   } catch { return $report }
   foreach ($n in ($ProcNames | Where-Object { $_ } | Select-Object -Unique)) {
+    if ($critical -contains ([string]$n).ToLowerInvariant()) {
+      $report += ("{0}: skipped (system-critical process, never trimmed)" -f $n)
+      continue
+    }
     foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
       try {
         $beforeMB = [math]::Round($p.WorkingSet64 / 1MB, 1)
@@ -1381,7 +1593,10 @@ function Add-ReportSection-Targets {
   $L.Add('[04] 目标统计 ----------------------------------------------------')
   if (Test-ShKey $SummaryObj 'counts') {
     $c = $SummaryObj.counts
-    if (Test-ShKey $c 'existingTotal') {
+    # Scan and Clean emit DIFFERENT counts shapes. Testing only 'existingTotal' matched both, so
+    # Clean runs printed blank '缺失目标 / 禁用目标' lines and never showed their own selectedTotal /
+    # byTier / freedByTier figures. Require the full Scan key set before taking the Scan branch.
+    if ((Test-ShKey $c 'existingTotal') -and (Test-ShKey $c 'missing') -and (Test-ShKey $c 'disabled')) {
       $L.Add(('  现存目标     : {0}' -f $c.existingTotal))
       $L.Add(('  缺失目标     : {0}' -f $c.missing))
       $L.Add(('  禁用目标     : {0}' -f $c.disabled))
@@ -1392,6 +1607,22 @@ function Add-ReportSection-Targets {
         $L.Add(('  [D] dangerous: {0}' -f $bt.dangerous))
       }
       $L.Add(('  现存总大小   : {0:N2} GB' -f [double]$c.existingGB))
+      if (Test-ShKey $c 'cleanableGB') {
+        $L.Add(('  一键可清     : {0:N2} GB ({1} 项, 已启用 safe 档)' -f [double]$c.cleanableGB, [int]$c.cleanableCount))
+      }
+    } elseif (Test-ShKey $c 'selectedTotal') {
+      $L.Add(('  选定目标     : {0}' -f [int]$c.selectedTotal))
+      $L.Add(('  路径存在     : {0}' -f [int]$c.existingTotal))
+      if (Test-ShKey $c 'byTier') {
+        foreach ($k in @($c.byTier.PSObject.Properties)) {
+          $L.Add(('  分级 {0,-10}: {1}' -f $k.Name, $k.Value))
+        }
+      }
+      if (Test-ShKey $c 'freedByTier') {
+        foreach ($k in @($c.freedByTier.PSObject.Properties)) {
+          $L.Add(('  释放 {0,-10}: {1:N2} GB' -f $k.Name, [double]$k.Value))
+        }
+      }
     } elseif (Test-ShKey $c 'byOrigin') {
       foreach ($k in @($c.byOrigin.PSObject.Properties)) {
         $L.Add(('  来源 {0,-14}: {1}' -f $k.Name, $k.Value))
@@ -1463,10 +1694,19 @@ function Add-ReportSection-Recommendations {
   $mode = $SummaryObj.mode
 
   if ($mode -eq 'Scan') {
-    if (Test-ShKey $SummaryObj 'counts' -and (Test-ShKey $SummaryObj.counts 'existingGB')) {
+    if (Test-ShKey $SummaryObj 'counts' -and (Test-ShKey $SummaryObj.counts 'cleanableGB')) {
+      $cg = [double]$SummaryObj.counts.cleanableGB
+      $eg = [double]$SummaryObj.counts.existingGB
+      if ($cg -gt 0) {
+        $recs.Add(('  - 一键可清（已启用 safe 档）约 {0:N2} GB，共 {1} 项' -f $cg, [int]$SummaryObj.counts.cleanableCount))
+      }
+      if ($eg -gt $cg) {
+        $recs.Add(('  - 扫描到的现存目标合计 {0:N2} GB，其中 {1:N2} GB 属 caution/已禁用项，需点名确认后才会清理' -f $eg, [math]::Round($eg - $cg, 2)))
+      }
+    } elseif (Test-ShKey $SummaryObj 'counts' -and (Test-ShKey $SummaryObj.counts 'existingGB')) {
       $gb = [double]$SummaryObj.counts.existingGB
       if ($gb -gt 1) {
-        $recs.Add(('  - 发现约 {0:N2} GB 可清理项，建议执行 Clean 释放空间' -f $gb))
+        $recs.Add(('  - 发现约 {0:N2} GB 现存目标，建议执行 Clean 释放空间' -f $gb))
       }
     }
     $safeCount = 0
@@ -1506,8 +1746,14 @@ function Add-ReportVerdict {
   $verdict = ''
   if ($mode -eq 'Scan') {
     $gb = 0.0
+    $cg = -1.0
     if (Test-ShKey $SummaryObj 'counts' -and (Test-ShKey $SummaryObj.counts 'existingGB')) { $gb = [double]$SummaryObj.counts.existingGB }
-    $verdict = ('扫描完成：发现 {0:N2} GB 可清理项，等待用户核准后执行 Clean。' -f $gb)
+    if (Test-ShKey $SummaryObj 'counts' -and (Test-ShKey $SummaryObj.counts 'cleanableGB')) { $cg = [double]$SummaryObj.counts.cleanableGB }
+    if ($cg -ge 0) {
+      $verdict = ('扫描完成：现存目标合计 {0:N2} GB，其中一键可清（已启用 safe 档）{1:N2} GB；其余需点名确认。等待用户核准后执行 Clean。' -f $gb, $cg)
+    } else {
+      $verdict = ('扫描完成：发现 {0:N2} GB 现存目标，等待用户核准后执行 Clean。' -f $gb)
+    }
   } elseif ($mode -eq 'Clean') {
     $verdict = ('清理完成：释放 {0:N2} GB，清理 {1} 项，跳过 {2} 项，错误 {3} 项。' -f [double]$t.freedGB, [int]$t.cleaned, [int]$t.skipped, [int]$t.errors)
   } else {
@@ -1877,6 +2123,54 @@ if ($ConfirmIds) {
 
 $threads = if ($MaxThreads -gt 0) { $MaxThreads } else { [Environment]::ProcessorCount }
 
+# ------------------------------------------------------------
+# RED LINE: -ScanMode diagnostic is a READ-ONLY audit mode. Its scan-lists profile deliberately
+# sets useWhitelist=false / skipBlacklist=false so an auditor can see what the rules would reach.
+# That makes it a fence-weakening switch, so it must never be combinable with Clean — otherwise
+# `-Mode Clean -ScanMode diagnostic` silently removes the scan-scope whitelist from a deletion run.
+# ------------------------------------------------------------
+if ($Mode -eq 'Clean' -and $ScanMode -eq 'diagnostic') {
+  Write-Host '[GATE] CLEAN BLOCKED: -ScanMode diagnostic is a read-only audit profile (it disables the' -ForegroundColor Red
+  Write-Host '       scan-scope whitelist and the user blacklist on purpose) and cannot be used with -Mode Clean.'
+  Write-Host '       Use -Mode Scan/Analyze -ScanMode diagnostic to audit, then Clean with fast|standard|deep.'
+  exit 3
+}
+
+# Validate id-bearing parameters. These strings are interpolated into the elevated child's command
+# line inside double quotes, so an embedded double quote (or a newline) can break out and inject
+# extra script parameters (e.g. -ConfirmIds / -Tiers dangerous / -PathFilter off) into an ADMIN
+# process. Reject exactly those breakout characters.
+# NOTE: path-looking ids (drive letters, backslashes) are deliberately still ACCEPTED here — the
+# documented contract is that a raw path like C:\Windows\System32 reaches the whitelist check and
+# comes back as status "error" / totals.errors, not as a hard exit. Do not tighten this to an
+# allow-list without updating that contract and tools/verify_safety.ps1.
+foreach ($pair in @(@{ n = '-Ids'; v = $Ids }, @{ n = '-ConfirmIds'; v = $ConfirmIds })) {
+  if ($pair.v -and ($pair.v -match '["`$\r\n\0]')) {
+    Write-Host ("[GUARD] {0} contains characters that cannot appear in a target id: {1}" -f $pair.n, $pair.v) -ForegroundColor Red
+    Write-Host '        Rejected: double quote, backtick, dollar sign, newline (command-line injection guard).'
+    exit 3
+  }
+}
+# Same injection surface for the path/list parameters that get interpolated into the elevated
+# child's command line. None of them legitimately contains a double quote, so reject rather than
+# attempt to escape (escaping rules differ between the shell and the CRT argv parser).
+foreach ($pair in @(
+    @{ n = '-Config';     v = $Config },
+    @{ n = '-Tiers';      v = $Tiers },
+    @{ n = '-LogPath';    v = $LogPath },
+    @{ n = '-ReportFile'; v = $ReportFile },
+    @{ n = '-PlanFile';   v = $PlanFile },
+    @{ n = '-CCPDirs';    v = $CCPDirs },
+    @{ n = '-RuleSets';   v = $RuleSets })) {
+  # Same breakout class as -Ids/-ConfirmIds above: a double quote escapes the quoting used by the
+  # elevated relaunch; CR/LF/NUL are illegal in Windows paths yet can act as argv separators or
+  # smuggle extra tokens into the ADMIN child's command line. None of them is ever legitimate here.
+  if ($pair.v -and ([string]$pair.v -match '["\r\n\0]')) {
+    Write-Host ("[GUARD] {0} must not contain a quote/newline/null character (command-line injection guard): {1}" -f $pair.n, $pair.v) -ForegroundColor Red
+    exit 3
+  }
+}
+
 Write-Host ''
 Write-Host '=============================================='
 Write-Host ("  win-c-clear-skill   Mode={0}" -f $Mode)
@@ -1892,10 +2186,10 @@ if ($DryRun) { Write-Host 'DryRun : TRUE (no deletion will happen)' -ForegroundC
 # ------------------------------------------------------------
 if ($Mode -eq 'MergeConfig') {
   if ($ruleDirs.Count -eq 0) {
-    Write-Host '[ERROR] No c_cleaner_plus directories configured (mergeSources in targets.json or -CCPDirs).'
+    Write-Host '[ERROR] No community rule directories configured (mergeSources in targets.json or -CCPDirs).'
     exit 3
   }
-  Write-Host ("Merging c_cleaner_plus rules from: {0}" -f ($ruleDirs -join ' ; '))
+  Write-Host ("Merging community rules from: {0}" -f ($ruleDirs -join ' ; '))
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $mergedData = Invoke-ConfigMerge -Dirs $ruleDirs -BuiltinConfigPath $configPath -OutMergedPath $mergedPath -OverridesPath $overridesPath
   $sw.Stop()
@@ -1946,13 +2240,19 @@ if ($ruleDirs.Count -gt 0) {
     $mergedMtime = (Get-Item -LiteralPath $mergedPath).LastWriteTime
     foreach ($d in $ruleDirs) {
       if (Test-Path -LiteralPath $d) {
-        $newest = Get-ChildItem -LiteralPath $d -Recurse -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($newest -and $newest.LastWriteTime -gt $mergedMtime) { $needMerge = $true; break }
+        # M3 fix: single O(n) max-mtime scan (was: recursive Get-ChildItem + full
+        # Sort-Object + intermediate object array — O(n log n), 1-3s on 10k-file rule dirs)
+        $newest = [datetime]::MinValue
+        foreach ($f in [System.IO.Directory]::EnumerateFiles($d, '*', [System.IO.SearchOption]::AllDirectories)) {
+          try { $m = [System.IO.File]::GetLastWriteTimeUtc($f) } catch { continue }
+          if ($m -gt $newest) { $newest = $m }
+        }
+        if ($newest -gt [datetime]::MinValue -and $newest -gt $mergedMtime.ToUniversalTime()) { $needMerge = $true; break }
       }
     }
   }
   if ($needMerge) {
-    Write-Host '[INFO] c_cleaner_plus rules changed or not merged yet; running merge pipeline...'
+    Write-Host '[INFO] community rules changed or not merged yet; running merge pipeline...'
     $mergedData = Invoke-ConfigMerge -Dirs $ruleDirs -BuiltinConfigPath $configPath -OutMergedPath $mergedPath -OverridesPath $overridesPath
   } else {
     try { $mergedData = Get-Content -LiteralPath $mergedPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $mergedData = $null }
@@ -1964,6 +2264,33 @@ if ($ruleDirs.Count -gt 0) {
 
 $allTargets = Get-EffectiveTargets -BuiltinCfg $cfg -MergedData $mergedData -OverridesData $overridesData
 Write-Host ("Targets loaded: {0} (builtin+ccp merged config)" -f $allTargets.Count)
+
+# ------------------------------------------------------------
+# Rule-set selection (guided; rules are NOT all loaded by default)
+#   minimal (default) = builtin whitelist only
+#   general|cn|dev|design|ai|game|media|system|community = curated/ccp categories
+#   all = everything; none = alias of minimal
+# NOTE ordering: this runs BEFORE path filtering. Filtering paths first meant every run walked all
+# ~15k merged targets through the whitelist/blacklist even for `-RuleSets minimal`, and it polluted
+# the reported skip counts with 15k community rules that were never in scope to begin with.
+# ------------------------------------------------------------
+$rsRaw = $RuleSets.Trim().ToLowerInvariant()
+if ($rsRaw -eq 'none') { $rsRaw = 'minimal' }
+if ($rsRaw -ne '' -and $rsRaw -ne 'all') {
+  $rsSet = @{}
+  foreach ($r in ($rsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) { $rsSet[$r] = $true }
+  $keepMin = $rsSet.ContainsKey('minimal')
+  $beforeRs = $allTargets.Count
+  $filtered = New-Object System.Collections.Generic.List[object]
+  foreach ($t in $allTargets) {
+    $cat = [string]$t.category
+    if (-not $cat) { $cat = if ($t.origin -in @('builtin', 'merged')) { 'builtin' } else { 'general' } }
+    if ($keepMin -and $cat -eq 'builtin') { $filtered.Add($t); continue }
+    if ($rsSet.ContainsKey($cat)) { $filtered.Add($t); continue }
+  }
+  $allTargets = $filtered
+  Write-Host ("RuleSets '{0}': {1} -> {2} targets (categories kept: {3})" -f $RuleSets, $beforeRs, $allTargets.Count, (($rsSet.Keys | Sort-Object) -join ','))
+}
 
 # ------------------------------------------------------------
 # Path filtering: whitelist/blacklist (R5-1/R5-3)
@@ -2031,22 +2358,49 @@ $filteredTargets = New-Object System.Collections.Generic.List[object]
 $swFilter = [System.Diagnostics.Stopwatch]::StartNew()
 # 性能：引擎 Guard 模式只取一次（避免每路径重复函数调用+数组分配）
 $engineGuards = @(Get-EngineGuardPatterns)
+$builtinBypass = 0          # builtin/merged targets exempt from the scan-scope whitelist
+$pathsNarrowed = 0          # community targets whose non-whitelisted paths were dropped
+$narrowedExamples = New-Object System.Collections.Generic.List[string]
 foreach ($t in $allTargets) {
+  # special 目标（recycle-bin/pagefile-swapfile/hiberfil/win-event-logs/windows-old）由各自
+  # 原生命令处理器保证安全，且无常规文件路径可过滤；在此放行，否则它们的 handler 永远不可达。
+  if ([string]$t.type -eq 'special') { $filteredTargets.Add($t); continue }
   $keep = $true
-  $paths = Get-TargetPathsExpanded $t   # 单次展开，两道过滤复用
+  # builtin/merged targets ARE the hand-curated whitelist (config/targets.json). Subjecting them
+  # to the scan-lists whitelist silently deleted ~1/3 of them from every run (unity-cache,
+  # unreal-ddc, nvidia-nvcache, package-cache, win-update-log, ...), which is invisible to the
+  # user because the skip count is pooled with the 15k community rules. Exempt them here; the
+  # blacklist + engine GuardPatterns below still apply unconditionally.
+  $isCurated = ([string]$t.origin -eq 'builtin' -or [string]$t.origin -eq 'merged')
 
-  # 第一道：白名单粗筛（快速字符串前缀）
-  if ($scanModeConfig.useWhitelist -and $wlSet.Count -gt 0) {
-    $match = $false
-    foreach ($p in $paths) {
-      if (Test-WhitelistFast ([string]$p).ToLowerInvariant()) { $match = $true; break }
+  # 第一道：白名单（按**路径**而非按目标）。RED LINE: 空集合=拒绝全部（fail-closed）。
+  # 门控必须用 -NoWhitelist / PathFilter，不能用 $wlSet.Count -gt 0 短路跳过过滤：
+  # 否则白名单为空时会静默放行全部目标（fail-open），违背 fail-closed 红线。
+  # 逐路径过滤修掉「搭便车」绕闸：旧实现只要有一条路径命中白名单就整体放行，随后对该目标的
+  # **全部**路径执行删除 —— 未被白名单授权的路径就这样被夹带进删除集合。
+  if ((-not $isCurated) -and $scanModeConfig.useWhitelist -and -not $NoWhitelist -and $PathFilter -in @('whitelist','both')) {
+    $rawKept = @()
+    $rawDropped = 0
+    foreach ($raw in @($t.paths)) {
+      $ep = Expand-EnvPath ([string]$raw)
+      if (-not $ep) { continue }
+      if (Test-WhitelistFast ([string]$ep).ToLowerInvariant()) { $rawKept += $raw } else { $rawDropped++ }
     }
-    if (-not $match) {
+    if ($rawKept.Count -eq 0) {
       $keep = $false
       $whitelistSkipped++
       if ($whitelistExamples.Count -lt 5) { $whitelistExamples.Add($t.id) }
+    } elseif ($rawDropped -gt 0) {
+      # keep the target but narrow it to the authorized subset
+      $t.paths = @($rawKept)
+      $pathsNarrowed++
+      if ($narrowedExamples.Count -lt 5) { $narrowedExamples.Add($t.id) }
     }
+  } elseif ($isCurated -and $scanModeConfig.useWhitelist -and -not $NoWhitelist -and $PathFilter -in @('whitelist','both')) {
+    $builtinBypass++
   }
+
+  $paths = Get-TargetPathsExpanded $t   # 展开（白名单收窄后）供黑名单复用
 
   # 第二道：黑名单精查（regex）。RED LINE: 引擎级 Guard 无条件执行；
   # 用户黑名单按 skipBlacklist 配置执行。
@@ -2073,9 +2427,15 @@ foreach ($t in $allTargets) {
 }
 $swFilter.Stop()
 
-if ($whitelistSkipped -gt 0 -or $blacklistSkipped -gt 0) {
+if ($whitelistSkipped -gt 0 -or $blacklistSkipped -gt 0 -or $pathsNarrowed -gt 0) {
   Write-Host ("Path filter: kept {0}/{1} targets, skipped {2} (whitelist), {3} (blacklist) in {4:N1}s" -f `
     $filteredTargets.Count, $allTargets.Count, $whitelistSkipped, $blacklistSkipped, $swFilter.Elapsed.TotalSeconds)
+  if ($builtinBypass -gt 0) {
+    Write-Host ("  builtin/merged exempt from scan-scope whitelist (they ARE the curated whitelist): {0}" -f $builtinBypass)
+  }
+  if ($pathsNarrowed -gt 0) {
+    Write-Host ("  targets narrowed to their whitelisted paths only: {0} (e.g. {1})" -f $pathsNarrowed, ($narrowedExamples -join ', '))
+  }
   if ($whitelistExamples.Count -gt 0) {
     Write-Host ("  whitelist-skipped examples: {0}" -f ($whitelistExamples -join ', '))
   }
@@ -2085,30 +2445,6 @@ if ($whitelistSkipped -gt 0 -or $blacklistSkipped -gt 0) {
 }
 
 $allTargets = $filteredTargets
-
-# ------------------------------------------------------------
-# Rule-set selection (guided; rules are NOT all loaded by default)
-#   minimal (default) = builtin whitelist only
-#   general|cn|dev|design|ai|game|media|system|community = curated/ccp categories
-#   all = everything; none = alias of minimal
-# ------------------------------------------------------------
-$rsRaw = $RuleSets.Trim().ToLowerInvariant()
-if ($rsRaw -eq 'none') { $rsRaw = 'minimal' }
-if ($rsRaw -ne '' -and $rsRaw -ne 'all') {
-  $rsSet = @{}
-  foreach ($r in ($rsRaw -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) { $rsSet[$r] = $true }
-  $keepMin = $rsSet.ContainsKey('minimal')
-  $beforeRs = $allTargets.Count
-  $filtered = New-Object System.Collections.Generic.List[object]
-  foreach ($t in $allTargets) {
-    $cat = [string]$t.category
-    if (-not $cat) { $cat = if ($t.origin -in @('builtin', 'merged')) { 'builtin' } else { 'general' } }
-    if ($keepMin -and $cat -eq 'builtin') { $filtered.Add($t); continue }
-    if ($rsSet.ContainsKey($cat)) { $filtered.Add($t); continue }
-  }
-  $allTargets = $filtered
-  Write-Host ("RuleSets '{0}': {1} -> {2} targets (categories kept: {3})" -f $RuleSets, $beforeRs, $allTargets.Count, (($rsSet.Keys | Sort-Object) -join ','))
-}
 
 # ------------------------------------------------------------
 # Mode: Analyze (diagnostic; read-only)
@@ -2134,7 +2470,9 @@ if ($Mode -eq 'Analyze') {
   }
   $summary.gpuAvailable = $gpuAvailable
   $summary.gpuName = $gpuName
-  if ($gpuAvailable -and $summary.hashPath -notlike 'gpu-*') {
+  # Only upgrade the PLAIN fallback label; the "no cupy; fell back" variant must survive,
+  # otherwise a GPU-present/no-cupy machine reports a misleading boosted-only path.
+  if ($gpuAvailable -and $summary.hashPath -eq 'cpu-parallel') {
     $summary.hashPath = 'cpu-parallel-boosted (GPU present: hash threads 2x cores for IO overlap)'
   }
 
@@ -2210,68 +2548,42 @@ if ($Mode -eq 'Analyze') {
     Remove-Item -LiteralPath $mftOut -Force -ErrorAction SilentlyContinue
     $topDirs = @($topDirs | Sort-Object sizeGB -Descending | Select-Object -First 20)
     $largeFiles = @($largeFiles | Sort-Object sizeGB -Descending | Select-Object -First 20)
+    Write-Host '[2/4] Large files + duplicate candidates already collected from MFT pass.'
   } else {
-    $dirJobs = New-Object System.Collections.Generic.List[object]
-    $idx = 0
-    foreach ($r in $roots) {
-      # Apply scan mode depth limit
-      $depth = 0
-      $stack = New-Object System.Collections.Generic.Stack[object]
-      $stack.Push(@{ Path = $r; Depth = 0 })
-      while ($stack.Count -gt 0) {
-        $item = $stack.Pop()
-        $currentPath = $item.Path
-        $currentDepth = $item.Depth
-        
-        if ($maxDepth -ge 0 -and $currentDepth -ge $maxDepth) { continue }
-        
-        foreach ($child in @(Get-ChildItem -LiteralPath $currentPath -Directory -Force -ErrorAction SilentlyContinue)) {
-          if (-not $followJunctions -and (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { continue }
-          
-          # RED LINE: engine guards always checked; user blacklist per skipBlacklist
-          if (Test-GuardrailBlocked $child.FullName) { continue }
-          if ($skipBlacklist -and $blacklistPatterns.Count -gt 0) {
-            if (Test-PathAgainstBlacklist $child.FullName $blacklistPatterns) { continue }
-          }
-          
-          $dirJobs.Add([pscustomobject]@{ Key = $child.FullName; Path = $child.FullName; Glob = '' })
-          $idx++
-          $stack.Push(@{ Path = $child.FullName; Depth = $currentDepth + 1 })
-        }
-      }
-    }
-    $dirResults = Invoke-MeasureParallel -MeasureJobs $dirJobs -ThreadCount $threads -ScanMode $ScanMode
-    foreach ($k in $dirResults.Keys) {
-      $v = $dirResults[$k]
-      if ($v -and $v.bytes -gt 0) { $topDirs += [pscustomobject]@{ path = $k; sizeGB = Get-BytesToGB $v.bytes } }
-    }
-    $topDirs = @($topDirs | Sort-Object sizeGB -Descending | Select-Object -First 20)
-  }
-
-  if (-not $mftUsed) {
-    Write-Host '[2/4] Finding large files (>= 1 GB) and duplicate candidates (>= 100 MB), single pass...'
+    # SINGLE-PASS .NET traversal (was: 3 walks — dir enumerate + ParallelScanner subtree
+    # re-measure + separate file walk, ~2x duplicate NTFS enumeration + cmdlet overhead).
+    # One stack walk now produces: per-first-level-segment byte aggregates (topDirs, same
+    # semantics as MFT 'D' records), large files (>=1GB), and duplicate candidates (>=100MB).
+    Write-Host '[2/4] Single-pass walk: top dirs + large files (>= 1 GB) + duplicate candidates (>= 100 MB)...'
     # file-count budget mirrors ParallelScanner presets (0 = unlimited)
     $lfMaxFiles = switch ($ScanMode) { 'fast' { 500000 } 'deep' { 0 } default { 2000000 } }
     $lfFileCount = 0
     $lfBudgetHit = $false
+    $segAgg = New-Object 'System.Collections.Generic.Dictionary[string,int64]'
     # rule-scoped roots only — never traverse USERPROFILE/ProgramData as generic roots
     foreach ($root in $roots) {
       if ($lfBudgetHit) { break }
       if (-not (Test-Path -LiteralPath $root)) { continue }
       $stack = New-Object System.Collections.Generic.Stack[object]
-      $stack.Push(@{ Path = $root; Depth = 0 })
+      # Seg = first-level segment under this root that a file/dir belongs to (root itself for depth 0)
+      $stack.Push(@{ Path = $root; Depth = 0; Seg = $root })
       while ($stack.Count -gt 0) {
         $item = $stack.Pop()
         $dir = $item.Path
         $currentDepth = $item.Depth
-        
+        $seg = $item.Seg
+
         if ($maxDepth -ge 0 -and $currentDepth -ge $maxDepth) { continue }
-        
+
         try {
           $di = New-Object System.IO.DirectoryInfo($dir)
           foreach ($fi in $di.EnumerateFiles()) {
             $lfFileCount++
             if ($lfMaxFiles -gt 0 -and $lfFileCount -ge $lfMaxFiles) { $lfBudgetHit = $true; break }
+            # attribute bytes to the first-level segment (root-level files roll up to the root itself — topDirs lists directories only)
+            $fseg = $seg
+            $cur = [int64]0
+            if ($segAgg.TryGetValue($fseg, [ref]$cur)) { $segAgg[$fseg] = $cur + $fi.Length } else { $segAgg[$fseg] = [int64]$fi.Length }
             # single-pass collection: large files (>=1GB) AND duplicate candidates (>=100MB)
             if ($fi.Length -ge 1GB) { $largeFiles.Add([pscustomobject]@{ path = $fi.FullName; sizeGB = Get-BytesToGB $fi.Length }) }
             if ($fi.Length -ge 100MB) { $dupCandidates.Add(@{ path = $fi.FullName; bytes = [int64]$fi.Length }) }
@@ -2279,22 +2591,26 @@ if ($Mode -eq 'Analyze') {
           if ($lfBudgetHit) { break }
           foreach ($sd in $di.EnumerateDirectories()) {
             if (-not $followJunctions -and (($sd.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { continue }
-            
+
             # RED LINE: engine guards always checked; user blacklist per skipBlacklist
             if (Test-GuardrailBlocked $sd.FullName) { continue }
             if ($skipBlacklist -and $blacklistPatterns.Count -gt 0) {
               if (Test-PathAgainstBlacklist $sd.FullName $blacklistPatterns) { continue }
             }
-            
-            $stack.Push(@{ Path = $sd.FullName; Depth = $currentDepth + 1 })
+
+            # first-level child defines the segment; deeper dirs inherit it
+            $cseg = if ($currentDepth -eq 0) { $sd.FullName } else { $seg }
+            $stack.Push(@{ Path = $sd.FullName; Depth = $currentDepth + 1; Seg = $cseg })
           }
         } catch {}
       }
     }
     if ($lfBudgetHit) { Write-Host ("      [WARN] Large-file scan hit {0} file budget ({1}); results may be partial. Use -ScanMode deep for full coverage." -f $ScanMode, $lfMaxFiles) -ForegroundColor Yellow }
+    foreach ($kv in $segAgg.GetEnumerator()) {
+      if ($kv.Value -gt 0) { $topDirs += [pscustomobject]@{ path = $kv.Key; sizeGB = Get-BytesToGB $kv.Value } }
+    }
+    $topDirs = @($topDirs | Sort-Object sizeGB -Descending | Select-Object -First 20)
     $largeFiles = @($largeFiles | Sort-Object sizeGB -Descending | Select-Object -First 20)
-  } else {
-    Write-Host '[2/4] Large files + duplicate candidates already collected from MFT pass.'
   }
 
   Write-Host '[3/4] Duplicate detection (size -> 64KB partial hash -> full MD5, cascade)...'
@@ -2545,6 +2861,24 @@ if ($Mode -eq 'Clean' -and -not $DryRun) {
       $ageMin = ((Get-Date) - [datetime]$plan.time).TotalMinutes
       if ($ageMin -le 30) { $planOk = $true }
       else { $planMsg = ("plan stale: scan was {0:N0} minutes ago (>30); rescan and re-confirm with the user" -f $ageMin) }
+      # SCOPE BINDING: freshness alone is not approval. A 30-minute-old Scan of one id set must not
+      # authorize cleaning a different id set. Bind Clean to what the Scan actually enumerated, so
+      # the plan file is an approval record rather than just a timestamp.
+      if ($planOk -and $plan.PSObject.Properties['scannedIds']) {
+        $planIds = @{}
+        foreach ($pid0 in @($plan.scannedIds)) { if ($pid0) { $planIds[[string]$pid0] = $true } }
+        if ($planIds.Count -gt 0) {
+          $outOfScope = @()
+          foreach ($cand in $selected) {
+            if (-not $planIds.ContainsKey([string]$cand.id)) { $outOfScope += [string]$cand.id }
+          }
+          if ($outOfScope.Count -gt 0) {
+            $planOk = $false
+            $planMsg = ("out of plan scope: {0} target(s) were not in the approved scan plan ({1}{2}). Rescan with the same filters, present the list, then Clean." -f `
+              $outOfScope.Count, (($outOfScope | Select-Object -First 8) -join ','), $(if ($outOfScope.Count -gt 8) { ',...' } else { '' }))
+          }
+        }
+      }
     } else { $planMsg = "no scan plan found at '$planPath'" }
   } catch { $planMsg = 'plan file unreadable: ' + $_.Exception.Message }
   if (-not $planOk) {
@@ -2595,6 +2929,16 @@ if ($Mode -eq 'Clean' -and -not $DryRun) {
     if ($HotMinutes -ne 30) { $argList += @('-HotMinutes', $HotMinutes) }
     if ($PlanFile) { $argList += @('-PlanFile', ('"{0}"' -f $PlanFile)) }
     if ($CCPDirs) { $argList += @('-CCPDirs', ('"{0}"' -f $CCPDirs)) }
+    # Fidelity passthrough: without these the elevated child silently ran with DEFAULT scan
+    # behaviour (standard depth, TopN 60, whitelist filter on) even when the user's approved run
+    # used something else. All values are ValidateSet-bound or [int]/[switch], and every string
+    # parameter already passed the double-quote injection guard above.
+    if ($ScanMode -ne 'standard') { $argList += @('-ScanMode', $ScanMode) }
+    if ($TopN -ne 60) { $argList += @('-TopN', $TopN) }
+    if ($PrettyJson) { $argList += '-PrettyJson' }
+    if ($PathFilter -ne 'whitelist') { $argList += @('-PathFilter', $PathFilter) }
+    if ($NoWhitelist) { $argList += '-NoWhitelist' }
+    if ($NoBlacklist) { $argList += '-NoBlacklist' }
     $elevated = $false
     try {
       $proc = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList ($argList -join ' ') -Wait -PassThru -ErrorAction Stop
@@ -2640,7 +2984,10 @@ function Test-SizeCacheHit([string]$Path) {
   try {
     $entries = $Script:SizeCache.entries
     if (-not $entries) { return $null }
-    $prop = $entries.PSObject.Properties[$Path]
+    # Portable cache key: look up by env-normalized form (%LOCALAPPDATA%\...) rather
+    # than the raw absolute path, so the cache is not tied to a specific username.
+    $key = ConvertTo-NormPath $Path
+    $prop = $entries.PSObject.Properties[$key]
     if (-not $prop) { return $null }
     $e = $prop.Value
     $age = [DateTime]::UtcNow.ToFileTime() - [long]$e.t
@@ -2656,7 +3003,17 @@ function Save-SizeCache([hashtable]$PathKeyMap, [hashtable]$Results) {
   try {
     $entries = @{}
     if ($Script:SizeCache -and $Script:SizeCache.entries) {
-      foreach ($p in $Script:SizeCache.entries.PSObject.Properties) { $entries[$p.Name] = $p.Value }
+      # Portable keys: migrate legacy absolute-path keys to env-normalized form
+      # (%LOCALAPPDATA%\...); drop entries that cannot be expressed without a
+      # machine-specific prefix so the cache never carries usernames.
+      foreach ($p in $Script:SizeCache.entries.PSObject.Properties) {
+        $ck = [string]$p.Name
+        if (-not $ck.StartsWith('%')) {
+          $nk = ConvertTo-NormPath $ck
+          if ($nk -and $nk.StartsWith('%')) { $ck = $nk } else { continue }
+        }
+        $entries[$ck] = $p.Value
+      }
     }
     $nowFt = [DateTime]::UtcNow.ToFileTime()
     foreach ($path in $PathKeyMap.Keys) {
@@ -2665,7 +3022,9 @@ function Save-SizeCache([hashtable]$PathKeyMap, [hashtable]$Results) {
       if (-not $r -or $r.bytes -lt 0) { continue }
       $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
       if (-not $item) { continue }
-      $entries[$path] = @{ b = [long]$r.bytes; m = [long]$item.LastWriteTimeUtc.ToFileTime(); t = $nowFt }
+      $ck = ConvertTo-NormPath $path
+      if (-not ($ck -and $ck.StartsWith('%'))) { continue }
+      $entries[$ck] = @{ b = [long]$r.bytes; m = [long]$item.LastWriteTimeUtc.ToFileTime(); t = $nowFt }
     }
     $out = @{ version = 1; entries = $entries }
     [System.IO.File]::WriteAllText($Script:SizeCachePath, ($out | ConvertTo-Json -Depth 4 -Compress), (New-Object System.Text.UTF8Encoding($true)))
@@ -2690,6 +3049,14 @@ foreach ($t in $selected) {
   $paths = Get-TargetPathsExpanded $t
   $targetPathMap[$t.id] = $paths
   foreach ($p in $paths) {
+    # RED LINE (reparse fence, measure side): never measure THROUGH a junction/symlink root.
+    # Enumerating a link root reports the LINK TARGET's files as this target's own (C2b: an
+    # 8 MB victim tree surfaced as a nonzero "cache" size), which then drives bogus freedGB
+    # arithmetic after the delete phase. Wildcard patterns are untouched here (Get-Item with
+    # -LiteralPath cannot match them) — they are resolved to concrete items further below,
+    # where the scanners apply their own reparse guards.
+    $probeItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if ($probeItem -and (Test-IsReparsePoint $probeItem)) { continue }
     if (-not $pathExists.ContainsKey($p)) {
       if ($p.IndexOfAny($wildcardChars) -ge 0) {
         # wildcard path (winapp2-style): cheap prefix-dir check before expensive resolution
@@ -2821,6 +3188,10 @@ foreach ($t in $selected) {
     status = 'scanned'
     message = $(if ($deniedAny) { 'partial: some subdirs unreadable (size is an estimate)' } else { '' })
     paths = @($paths)
+    # RED LINE (C1 regression): glob MUST travel with the item. Clear-OnePath falls back to
+    # whole-directory deletion when GlobPattern is empty, so a missing glob here turns a
+    # scoped "delete thumbcache*.db" target into "delete every child of the directory".
+    glob = [string]$t.glob
     stopProcesses = @($t.stopProcesses)
     stopServices = @($t.stopServices)
     preCommands = @($t.preCommands)
@@ -2879,6 +3250,12 @@ if ($Mode -eq 'Scan') {
     }
     existingByCategory = Get-GroupCounts $existingSorted 'category'
     existingGB = [math]::Round((($existingSorted | Measure-Object sizeGB_before -Sum).Sum), 2)
+    # existingGB counts EVERY existing target (caution + disabled included), so it overstates what
+    # a plain `-Tiers safe` clean would actually free. cleanableGB is the honest headline number:
+    # enabled safe-tier targets only — i.e. what one "clean all safe" confirmation really reclaims.
+    cleanableGB = [math]::Round((($existingSorted | Where-Object { $_.enabled -and $_.tier -eq 'safe' } | Measure-Object sizeGB_before -Sum).Sum), 2)
+    cleanableCount = @($existingSorted | Where-Object { $_.enabled -and $_.tier -eq 'safe' }).Count
+    needsConfirmGB = [math]::Round((($existingSorted | Where-Object { $_.enabled -and $_.tier -eq 'caution' } | Measure-Object sizeGB_before -Sum).Sum), 2)
   }
   $summary.note = "items limited to Top-$TopN existing targets; full detail in targets.merged.json / rerun with -TopN"
   $summary.cacheHits = $cacheHits.Count
@@ -2907,6 +3284,9 @@ if ($Mode -eq 'Scan') {
       existingTotal = $summary.counts.existingTotal
       existingGB = $summary.counts.existingGB
       topIds = @($existingSorted | Select-Object -First 20 | ForEach-Object { $_.id })
+      # Full enumerated id set: the plan gate binds Clean to this list so a scan of one selection
+      # cannot authorize deleting a different one (freshness != approval).
+      scannedIds = @($items | ForEach-Object { [string]$_.id })
     }
     [System.IO.File]::WriteAllText((Join-Path $configDir 'last-scan.json'), ($plan | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($true)))
   } catch {}
@@ -2923,6 +3303,10 @@ $summary.threads = $threads
 $cleanItems = New-Object System.Collections.Generic.List[object]
 $stoppedServices = @{}
 $procNamesToTrim = New-Object System.Collections.Generic.List[string]
+# L3① fix: batch the after-measurement — collect all targets' after-jobs during the loop,
+# then run ONE Invoke-MeasureParallel pass afterwards (was: N serial pool setups per target).
+$allAfterJobs = New-Object System.Collections.Generic.List[object]
+$needsAfter = New-Object System.Collections.Generic.List[int]
 
 # engine-level gate: caution/dangerous must be confirmed by id
 foreach ($it in $items) {
@@ -2960,7 +3344,9 @@ foreach ($it in $items) {
     continue
   }
 
-  if (-not $it.exists) {
+  # special targets (e.g. recycle-bin, paths=[]) have no filesystem path to probe,
+  # so skipping on !exists would strand their native handler (Clear-RecycleBin) unreachable.
+  if (-not $it.exists -and $it.type -ne 'special') {
     $it.status = 'skipped'
     $it.message = 'path missing (idempotent no-op)'
     $cleanItems.Add($it)
@@ -3012,11 +3398,26 @@ foreach ($it in $items) {
     $it.message = ('backup: {0} ({1} paths copied)' -f $bk.path, $bk.copied)
   }
 
-  # pre commands (app-native cleaners)
+  # pre commands (app-native cleaners).
+  # RED LINE (M2 closure): preCommands are `cmd /c`-executed strings that ship inside editable
+  # JSON config — previously ANY edited/third-party targets.json was an arbitrary-command sink.
+  # Now: tool must be on a fixed allowlist (the documented native-cleaner set) and the command
+  # must be free of shell metacharacters. Anything else is refused loudly, never executed.
+  $preAllowedTools = @('uv', 'pip', 'pip3', 'npm', 'yarn', 'pnpm', 'wevtutil', 'powercfg')
   foreach ($cmd in @($it.preCommands)) {
     if ([string]::IsNullOrWhiteSpace([string]$cmd)) { continue }
+    $tool = (($cmd -split ' ')[0]).Trim()
+    if ($preAllowedTools -notcontains $tool) {
+      $it.message = ('pre command blocked (tool not on allowlist): {0}' -f $tool)
+      Write-Host ("  [GUARD] pre command blocked: '{0}' (tool '{1}' is not on the native-cleaner allowlist)" -f $cmd, $tool) -ForegroundColor Red
+      continue
+    }
+    if ($cmd -match '[&|<>^%"`]') {
+      $it.message = ('pre command blocked (shell metacharacter): {0}' -f $cmd)
+      Write-Host ("  [GUARD] pre command blocked: '{0}' (contains shell metacharacters)" -f $cmd) -ForegroundColor Red
+      continue
+    }
     Write-Host ("  -> pre: {0}" -f $cmd)
-    $tool = ($cmd -split ' ')[0]
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
       $it.message = ('pre command skipped (tool not found): {0}' -f $tool)
       continue
@@ -3042,12 +3443,22 @@ foreach ($it in $items) {
     # native takeown/icacls sequence then delete (two-phase confirmed dangerous target)
     foreach ($p in $it.paths) {
       if (-not (Test-Path -LiteralPath $p)) { continue }
+      # 护栏先行：避免在受保护路径上先改写 ACL（takeown/icacls 副作用）再被 Clear-OnePath 拦截
+      if (Test-GuardrailBlocked (ConvertTo-NormPath $p)) {
+        $it.status = 'blocked-by-guardrail'
+        $it.message = 'blocked: Windows.old is a protected system artifact; this skill never deletes it — use Disk Cleanup (cleanmgr) or Storage Settings'
+        continue
+      }
       Write-Host ("  -> takeown: {0}" -f $p)
       cmd /c "takeown /F `"$p`" /A /R /D Y" 2>$null | Out-Null
-      cmd /c "icacls `"$p`" /grant Administrators:F /T /C /Q" 2>$null | Out-Null
+      # Grant via the well-known SID *S-1-5-32-544 (BUILTIN\Administrators) instead of
+      # the localized group name, so this works on non-English Windows (e.g. zh-CN "管理员").
+      cmd /c "icacls `"$p`" /grant *S-1-5-32-544:F /T /C /Q" 2>$null | Out-Null
       $res = Clear-OnePath -Path $p -GlobPattern '' -Mode $RecoveryMode -TargetId $it.id -TargetOrigin $it.origin -Tier $it.tier -HotMin $HotMinutes
       $hotTotal += $script:LastHotSkipped; $riskTotal += $script:LastRiskSkipped
       if ($res -eq 'locked') { $it.message = 'some files locked; reboot and retry, or use Disk Cleanup (cleanmgr)' }
+      elseif ($res -eq 'blocked') { $it.status = 'blocked-by-guardrail'; $it.message = 'blocked: protected by guardrail (defense-in-depth)' }
+      elseif ($res -eq 'reparse') { $it.status = 'skipped'; $it.message = 'skipped: path is a junction/symlink (reparse point); the engine never deletes through a link' }
     }
   } else {
     foreach ($p in $it.paths) {
@@ -3079,6 +3490,10 @@ foreach ($it in $items) {
           $it.status = 'blocked-by-guardrail'
           $it.message = 'blocked: protected system path (defense-in-depth assert); this skill never deletes OS core files'
         }
+        if ($res -eq 'reparse') {
+          $it.status = 'skipped'
+          $it.message = 'skipped: path is a junction/symlink (reparse point). Deleting through a link would affect the link target (often another drive), so this skill never recurses into links. Remove the link manually if you really mean to.'
+        }
       }
     }
   }
@@ -3095,31 +3510,63 @@ foreach ($it in $items) {
   }
   foreach ($pn in $it.stopProcesses) { $procNamesToTrim.Add($pn) }
 
-  # measure after (wildcard-aware)
-  $afterJobs = New-Object System.Collections.Generic.List[object]
+  # defer after-measurement: batch every target's jobs into ONE parallel pass after the
+  # loop (per-target pool setup / priority switching was pure serial overhead for N targets).
+  # Key = "<targetIndex>|<path>" — first '|' is always the separator (index is all digits).
+  $tgtIdx = $cleanItems.Count
   foreach ($p in $it.paths) {
     if ($p.IndexOfAny($wildcardChars) -ge 0) {
       foreach ($cp in @(Get-Item -Path $p -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })) {
-        $afterJobs.Add(@{ Items = @(@{ k = $cp; p = $cp; g = [string]$it.glob }) })
+        $allAfterJobs.Add(@{ Items = @(@{ k = "$tgtIdx|$cp"; p = $cp; g = [string]$it.glob }) })
       }
     } else {
-      $afterJobs.Add(@{ Items = @(@{ k = $p; p = $p; g = [string]$it.glob }) })
+      $allAfterJobs.Add(@{ Items = @(@{ k = "$tgtIdx|$p"; p = $p; g = [string]$it.glob }) })
     }
   }
-  $afterRes = Invoke-MeasureParallel -MeasureJobs $afterJobs -ThreadCount 4 -ScanMode $ScanMode
-  $afterBytes = [int64]0
-  foreach ($p in $it.paths) {
-    $r = $afterRes[$p]
-    if ($r -and $r.bytes -gt 0) { $afterBytes += [int64]$r.bytes }
-  }
-  $it.sizeGB_after = Get-BytesToGB $afterBytes
-  $freed = [math]::Round($it.sizeGB_before - $it.sizeGB_after, 2)
-  if ($freed -lt 0) { $freed = 0 }
-  $it.freedGB = $freed
-  if ($it.sizeGB_after -le 0.01) { $it.status = 'cleaned' }
-  elseif ($freed -gt 0) { $it.status = 'cleaned'; $it.message = ('partial: {0:N2} GB remains' -f $it.sizeGB_after) + $(if ($it.message) { '; ' + $it.message } else { '' }) }
-  else { $it.status = 'locked'; if (-not $it.message) { $it.message = 'files in use; nothing freed' } }
+  [void]$needsAfter.Add($tgtIdx)
   $cleanItems.Add($it)
+}
+
+# batched after-measurement: one pool pass for all cleaned targets (wildcard-aware keys,
+# aggregated per target index — fixes both the serial-per-target overhead and the
+# wildcard-key mismatch that zeroed afterBytes / inflated freedGB)
+if ($allAfterJobs.Count -gt 0) {
+  $afterResAll = Invoke-MeasureParallel -MeasureJobs $allAfterJobs -ThreadCount 4 -ScanMode $ScanMode
+  $afterByTarget = @{}
+  $afterDeniedTargets = @{}
+  foreach ($kv in $afterResAll.GetEnumerator()) {
+    $sep = $kv.Key.IndexOf('|')
+    if ($sep -lt 1) { continue }
+    $ti = [int]$kv.Key.Substring(0, $sep)
+    if (-not $afterByTarget.ContainsKey($ti)) { $afterByTarget[$ti] = [int64]0 }
+    if ($kv.Value -and $kv.Value.bytes -gt 0) { $afterByTarget[$ti] += [int64]$kv.Value.bytes }
+    elseif ($kv.Value -and $kv.Value.bytes -lt 0) { $afterDeniedTargets[$ti] = $true }
+  }
+  foreach ($ti in $needsAfter) {
+    $it = $cleanItems[$ti]
+    $afterBytes = [int64]0
+    if ($afterByTarget.ContainsKey($ti)) { $afterBytes = $afterByTarget[$ti] }
+    $it.sizeGB_after = Get-BytesToGB $afterBytes
+    $freed = [math]::Round($it.sizeGB_before - $it.sizeGB_after, 2)
+    if ($freed -lt 0) { $freed = 0 }
+    # Fence verdicts decided during the delete phase are TERMINAL. The residual-size heuristics
+    # below must never overwrite them: a target the reparse fence refused (status 'skipped') or a
+    # guardrail-blocked path was being re-marked 'cleaned' here whenever its residual size rounded
+    # to <=0.01 GB — reporting a deletion that never happened (C2b regression).
+    if ($it.status -eq 'blocked-by-guardrail' -or $it.status -eq 'skipped' -or $it.status -eq 'advisory' -or $it.status -eq 'error') {
+      continue
+    }
+    # A denied after-measurement (-1 bytes) contributes ZERO to the residual sum, which would
+    # otherwise inflate freedGB and let a still-locked target claim status 'cleaned'. Keep the
+    # computed numbers but label the result as an estimate (宁少勿错: never overclaim success).
+    if ($afterDeniedTargets.ContainsKey([int]$ti)) {
+      $it.message = 'after-measure partially unreadable; freedGB is an estimate' + $(if ($it.message) { '; ' + $it.message } else { '' })
+    }
+    $it.freedGB = $freed
+    if ($it.sizeGB_after -le 0.01) { $it.status = 'cleaned' }
+    elseif ($freed -gt 0) { $it.status = 'cleaned'; $it.message = ('partial: {0:N2} GB remains' -f $it.sizeGB_after) + $(if ($it.message) { '; ' + $it.message } else { '' }) }
+    else { $it.status = 'locked'; if (-not $it.message) { $it.message = 'files in use; nothing freed' } }
+  }
 }
 
 # working set trim (optional, only user-confirmed process names)
@@ -3185,7 +3632,9 @@ if ($RecoveryMode -eq 'quarantine' -and $Script:QuarantineManifest -and $Script:
     Write-Host ("Restore: powershell -File tools\restore-quarantine.ps1 -Manifest `"{0}`"" -f $mf) -ForegroundColor Cyan
   } catch {}
 }
-Save-SizeCache $pathKeyMap $measureResults
+# M9 修复：Clean 后不落缓存。$measureResults 是"清理前"的测量值，若在 Clean 结束时写回，
+# 残留目录会在 TTL 内被后续 Scan 命中陈旧偏大的 bytes（freedGB 虚高）。清理后状态以重扫为准。
+if ($Mode -ne 'Clean') { Save-SizeCache $pathKeyMap $measureResults }
 Write-SummaryAndLog $summary $logPathFinal
 
 # exit codes: 0 ok; 2 some items need admin; 3 fatal

@@ -83,7 +83,7 @@ Agent 最佳实践：解析 JSON 后只转述 Top 项 + counts；需要完整清
 ```powershell
 scripts\Scan.bat        # 只读扫描
 scripts\Clean-Safe.bat  # safe 档清理
-schtasks /create /tn "WinCClean" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\skills\win-c-clear-skill\scripts\Invoke-CDriveCleanup.ps1\" -Mode Clean -Tiers safe" /sc weekly /d SUN /st 03:00 /rl HIGHEST
+schtasks /create /tn "WinCClean" /tr "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\path\to\win-c-clear-skill\scripts\Invoke-CDriveCleanup.ps1\" -Mode Clean -Tiers safe" /sc weekly /d SUN /st 03:00 /rl HIGHEST
 ```
 
 ## 原生命令优先清单（清理动作用 Windows 自带能力）

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Install win-c-clear-skill into agent harness skill directories.
@@ -50,22 +50,55 @@ if ($All) { $Targets = 'claude,codex,deepseek' }
 if (-not $Targets) { Write-Host 'No target. Use -All, -Targets <list> or -List.'; exit 1 }
 
 $chosen = @($Targets -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+
+# Runtime/generated artifacts must never be installed: they are machine-local, they bloat the
+# install (targets.merged.json alone is ~19 MB), and shipping config/last-scan.json would hand the
+# fresh installation a ready-made approval plan that satisfies the engine's Clean plan gate.
+$excludeDirs  = @('.git', 'logs', 'reports', 'quarantine', 'backups', '__pycache__', '_cache', '.venv')
+$excludeFiles = @('targets.merged.json', 'user-overrides.json', 'scan-cache.json', 'last-scan.json')
+
+function Remove-InstallTarget([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  $it = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  # A previous -Symlink install leaves a JUNCTION here. Remove-Item -Recurse follows junctions on
+  # Windows PowerShell 5.1, which would delete the SOURCE repository's contents. Unlink only.
+  if ($it -and ((([int]$it.Attributes) -band ([int][System.IO.FileAttributes]::ReparsePoint)) -ne 0)) {
+    [System.IO.Directory]::Delete($it.FullName, $false)
+    return
+  }
+  Remove-Item -LiteralPath $Path -Recurse -Force
+}
+
+function Copy-SkillTree([string]$Src, [string]$Dst) {
+  # Prune excluded directories BEFORE descending (never enumerate .git at all), and never follow
+  # reparse points out of the source tree.
+  New-Item -ItemType Directory -Path $Dst -Force | Out-Null
+  foreach ($item in Get-ChildItem -LiteralPath $Src -Force) {
+    if ($item.PSIsContainer) {
+      if ($excludeDirs -contains $item.Name) { continue }
+      if ((([int]$item.Attributes) -band ([int][System.IO.FileAttributes]::ReparsePoint)) -ne 0) { continue }
+      Copy-SkillTree $item.FullName (Join-Path $Dst $item.Name)
+    } else {
+      if ($excludeFiles -contains $item.Name) { continue }
+      if ($item.Extension -eq '.pyc') { continue }
+      Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $Dst $item.Name) -Force
+    }
+  }
+}
+
 foreach ($c in $chosen) {
   if (-not $map.Contains($c)) { Write-Host "[SKIP] unknown target: $c"; continue }
   $destRoot = $map[$c]
   $dest = Join-Path $destRoot $skillName
   try {
     if (-not (Test-Path $destRoot)) { New-Item -ItemType Directory -Path $destRoot -Force | Out-Null }
-    if (Test-Path $dest) {
-      if (-not $Symlink) { Remove-Item $dest -Recurse -Force }
-    }
+    Remove-InstallTarget $dest
     if ($Symlink) {
-      if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
       New-Item -ItemType Junction -Path $dest -Target $skillRoot -ErrorAction Stop | Out-Null
       Write-Host "[OK] junction: $dest -> $skillRoot"
     } else {
-      Copy-Item $skillRoot $dest -Recurse -Force
-      Write-Host "[OK] copied to: $dest"
+      Copy-SkillTree $skillRoot $dest
+      Write-Host "[OK] copied to: $dest (generated/runtime artifacts excluded)"
     }
   } catch { Write-Host "[FAIL] ${c}: $($_.Exception.Message)" }
 }

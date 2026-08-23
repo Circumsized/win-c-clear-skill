@@ -14,7 +14,7 @@ Outputs (all under config/generated/, git-ignored):
   - community_cleaners.json  : BleachBit cleaners converted (Windows-only paths)
   - obsolete_report.json     : stale-entry audit (local winapp2.json vs latest)
 
-Unified rule tuple (compatible with c_cleaner_plus 6-element arrays):
+Unified rule tuple (compatible with community rule-source 6-element arrays):
   [name, path, type, default_checked, note, enabled]
   - name    : "win2 | <section>" or "BBC | <cleaner label> - <option label>"
   - path    : environment-variable form (%LocalAppData% etc.)
@@ -120,7 +120,7 @@ def normalize_path(p):
                 'ProgramFiles', 'WinDir', 'SystemDrive', 'Public', 'CommonAppData',
                 'CommonProgramFiles', 'LocalAppDataLow', 'Documents'):
         p = re.sub(r'%' + var + '%', '%' + var.upper() + '%', p, flags=re.IGNORECASE)
-    return p.rstrip('\\') if p.endswith(':') is False and p.endswith('\\') else p.rstrip('\\')
+    return p if p.endswith(':\\') else p.rstrip('\\')
 
 
 # ---------------------------------------------------------------------------

@@ -161,9 +161,11 @@ public static class MftScanner
                     if (!ReadFile(h, buf, want, out got, IntPtr.Zero) || got == 0) break;
                     chunks++;
                     long recNo = (recBaseVcn * clusterBytes + done) / frsBytes;
+                    // Reuse one record buffer across records: ApplyFixups rewrites in place,
+                    // so each iteration overwrites it via Array.Copy before parsing.
+                    var rec = new byte[frsBytes];
                     for (uint off = 0; off + frsBytes <= got; off += frsBytes, recNo++)
                     {
-                        var rec = new byte[frsBytes];
                         Array.Copy(buf, off, rec, 0, frsBytes);
                         ParseRecord(rec, entries, ref totalFiles, ref totalBytes, recNo);
                     }
@@ -192,12 +194,13 @@ public static class MftScanner
             var dirAgg = new Dictionary<string, long>();
             var big = new List<KeyValuePair<string, long>>();
             var dup = new List<KeyValuePair<string, long>>();
+            var pathCache = new Dictionary<ulong, string>();  // memoize dir paths (BuildPath is hot)
             string volPrefix = volume + ":\\";
             foreach (var kv in entries)
             {
                 var e = kv.Value;
                 if (e.IsDir || e.Name == null) continue;
-                string rel = BuildPath(entries, kv.Key);
+                string rel = BuildPath(entries, kv.Key, pathCache);
                 if (rel == null) continue;
                 string path = volPrefix + rel;
                 bool inRoot = false;
@@ -334,22 +337,36 @@ public static class MftScanner
         if (!e.IsDir) { totalFiles++; totalBytes += e.Size; }
     }
 
-    private static string BuildPath(Dictionary<ulong, Entry> entries, ulong frn)
+    private static string BuildPath(Dictionary<ulong, Entry> entries, ulong frn, Dictionary<ulong, string> cache)
     {
-        var parts = new List<string>(16);
+        string cached;
+        if (cache.TryGetValue(frn, out cached) && cached != null) return cached;
+
+        // Walk up to root (FRN 5) or the nearest already-cached ancestor, collecting the
+        // chain. Each ancestor's full relative path is memoized on the way back so sibling
+        // files under the same directory resolve in O(1) instead of O(depth) each.
+        var chain = new List<ulong>();
         var seen = new HashSet<ulong>();
         ulong cur = frn;
         int depth = 0;
         while (cur != 5 && depth++ < 64)
         {
             if (!seen.Add(cur)) return null;
+            if (cache.TryGetValue(cur, out cached) && cached != null) break;
             Entry e;
             if (!entries.TryGetValue(cur, out e) || e.Name == null) return null;
-            parts.Add(e.Name);
+            chain.Add(cur);
             cur = e.Parent & 0xFFFFFFFFFFFF; // low 6 bytes = FRN, high 2 = sequence
         }
-        if (cur != 5 || parts.Count == 0) return null;
-        parts.Reverse();
-        return string.Join("\\", parts.ToArray());
+        if (cur != 5 && (!cache.TryGetValue(cur, out cached) || cached == null)) return null;
+
+        string path = (cur == 5) ? string.Empty : cached;
+        for (int i = chain.Count - 1; i >= 0; i--)
+        {
+            string name = entries[chain[i]].Name;
+            path = path.Length == 0 ? name : path + "\\" + name;
+            cache[chain[i]] = path;
+        }
+        return path;
     }
 }

@@ -1,4 +1,4 @@
-$root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+﻿$root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 # replicate the exact filter chain from the engine to see what allTargets contains at Analyze time
 $cfg = Get-Content -LiteralPath "$root\config\targets.merged.json" -Raw -Encoding UTF8 | ConvertFrom-Json
 $lists = Get-Content -LiteralPath "$root\config\scan-lists.json" -Raw -Encoding UTF8 | ConvertFrom-Json

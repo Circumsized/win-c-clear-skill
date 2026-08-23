@@ -195,7 +195,7 @@ Agent: 清理完成:释放 13.60 GB,C 盘可用 12.68 → 26.28 GB(+13.60)
 ┌─────────────┐   ┌──────────────────┐   ┌──────────────────┐   ┌───────────────┐
 │ config/      │   │ assets/rules/    │   │ MergeConfig      │   │ user-overrides│
 │ targets.json │ + │ winapp2/BleachBit│──▶│ 发现→解析→去重→  │──▶│ .json          │
-│ (87 内置)    │   │ c_cleaner_plus   │   │ 分级→合并        │   │ (你的勾选结果) │
+│ (87 内置)    │   │ 精选社区规则      │   │ 分级→合并        │   │ (你的勾选结果) │
 └─────────────┘   └──────────────────┘   └──────────────────┘   └───────────────┘
                                                         │ targets.merged.json
                                                         ▼
@@ -256,7 +256,7 @@ Agent: 清理完成:释放 13.60 GB,C 盘可用 12.68 → 26.28 GB(+13.60)
 | 单文件 PowerShell 引擎 | 部署零依赖:目标机器只需 Windows 自带的 PowerShell 5.1,无需额外安装任何运行时或框架 |
 | C# 热插(`Add-Type`) | 并行扫描、MFT 直读等性能敏感路径以内嵌 C# 编译执行;加载失败时自动回退到纯 PowerShell 实现,不因缺失 .NET 而阻断 |
 | 数据与逻辑分离 | 清理目标全部外置为 JSON 配置,新增或修改清理项不需要动任何脚本代码 |
-| origin 溯源合并 | 每条合并规则携带 `builtin\|c_cleaner_plus\|merged` 来源标记,内置白名单项在任何合并场景下都永不被覆盖 |
+| origin 溯源合并 | 每条合并规则携带 `builtin\|community-sourced\|merged` 来源标记,内置白名单项在任何合并场景下都永不被覆盖 |
 | 双通道输出 | stdout 只承载机器可读的 JSON 契约,人类阅读内容全部走 Markdown 报告文件,两者互不污染 |
 
 ### 使用的 Windows API
@@ -296,7 +296,7 @@ Agent: 清理完成:释放 13.60 GB,C 盘可用 12.68 → 26.28 GB(+13.60)
 
 #### 占用与提权：只查证，不强抢
 
-被锁文件不靠猜测，引擎通过 Restart Manager（`RmStartSession` / `RmRegisterResources` / `RmGetList`，rstrtmgr.dll）查询精确的占用进程名称与 PID；`RmShutdown` / `RmRestart` 被有意不用——关闭进程必须经 `-AllowStop` 门控，由 `Stop-Process` 显式执行并记录。提权走 `Start-Process -Verb RunAs`（UAC 的 runas 动词），结果经临时文件回传以免提权后输出丢失。`takeown` / `icacls` 仅在两段式确认后的 Windows.old 删除前置使用；至于 WinSxS、Installer 等 TrustedInstaller 区域，引擎的选择是**永不触碰**（黑名单 guardrail），而非像传统清理工具那样抢所有权强删——WinSxS 唯一安全的官方通道是 DISM `StartComponentCleanup`，引擎只建议、不执行。系统还原点（VSS）同理列为红线，任何模式都不代为删除。
+被锁文件不靠猜测，引擎通过 Restart Manager（`RmStartSession` / `RmRegisterResources` / `RmGetList`，rstrtmgr.dll）查询精确的占用进程名称与 PID；`RmShutdown` / `RmRestart` 被有意不用——关闭进程必须经 `-AllowStop` 门控，由 `Stop-Process` 显式执行并记录。提权走 `Start-Process -Verb RunAs`（UAC 的 runas 动词），结果经临时文件回传以免提权后输出丢失。`takeown` / `icacls` 保留在代码里作为 Windows.old 的接管前置，但实际不可达：`\windows.old` 属受保护路径，护栏必然命中，该目标恒返回 `blocked-by-guardrail` 且零删除（请改用 cleanmgr 的「以前的 Windows 安装」）；至于 WinSxS、Installer 等 TrustedInstaller 区域，引擎的选择是**永不触碰**（黑名单 guardrail），而非像传统清理工具那样抢所有权强删——WinSxS 唯一安全的官方通道是 DISM `StartComponentCleanup`，引擎只建议、不执行。系统还原点（VSS）同理列为红线，任何模式都不代为删除。
 
 完整的分层映射与未采纳方案的理由，见 [references/windows-api.md](references/windows-api.md)。
 
@@ -462,7 +462,7 @@ Windows 原生的 Restart Manager 会话(`RmStartSession` → `RmRegisterResourc
 | | 受保护路径黑名单 | WinSxS、System32 核心、Installer、GAC、Boot\BCD、页面文件等 30 余组正则,合并期降级、删除期拦截,双保险 |
 | | advisory 目标 | pagefile 等特殊目标永不删除,即使经过两段式确认也只返回设置指引 |
 | **规则生态** | 11 类规则集引导 | 默认 minimal,按需开启 cn / dev / ai / game / community 等分类 |
-| | 15,400+ 社区规则 | Winapp2 v260730 + BleachBit cleaners + c_cleaner_plus 精选,全部 vendored 自包含 |
+| | 15,400+ 社区规则 | Winapp2 v260730 + BleachBit cleaners + 精选社区规则,全部 vendored 自包含 |
 | | 确定性合并管线 | 七步管线:origin 溯源、id 跨重建稳定、内置项永不被覆盖 |
 | | 用户勾选持久化 | `user-overrides.json` 记录逐项启用/禁用,规则升级后仍有效 |
 | **Agent 协作** | 自然语言工作流 | 六步进度清单驱动,确认话术遵循三要素(选项 + 后果 + 默认) |
@@ -553,7 +553,7 @@ AI 软件(ai) / 游戏平台(game) / 影音创作(media) / 系统缓存(system) 
 | 层级 | 位置 | 说明 |
 |------|------|------|
 | **内置白名单** | `config/targets.json` | 87 个精选目标,`category: builtin`,始终随 `minimal` 加载。手工编辑的主入口 |
-| **社区规则库** | `assets/rules/*.json` | 约 1.54 万条 vendored 规则(Winapp2/BleachBit/c_cleaner_plus),按 11 个 `-RuleSets` 分类选择性加载,默认关闭 |
+| **社区规则库** | `assets/rules/*.json` | 约 1.54 万条 vendored 规则(Winapp2/BleachBit/精选社区规则),按 11 个 `-RuleSets` 分类选择性加载,默认关闭 |
 | **合并产物** | `config/targets.merged.json` | 引擎自动生成(勿手改):三层合并 + 去重 + 自动分级 + origin 溯源的结果,运行时唯一数据源 |
 
 **规则条目的生命周期**:
@@ -756,7 +756,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Invoke-CDriveCleanup
 | `-Elevate` | 需要时触发 UAC 重启;JSON_SUMMARY 经结果文件回传 |
 | `-DryRun` | 完整流程,零删除 |
 | `-AllowStop` | 允许停止列出的进程/服务(须经用户确认后传入) |
-| `-BackupDangerous` | 删除前将 dangerous 目标备份到桌面 |
+| `-BackupDangerous` | 删除前将 dangerous 目标备份到 `<skill-root>\backups\`(skill 在 C: 时为同盘,不释放空间) |
 | `-TrimWorkingSet` | 对已清理目标的进程执行 EmptyWorkingSet |
 | `-MaxThreads N` | 并行线程数(默认=逻辑核数) |
 | `-Policy conservative\|standard\|deep` | 策略层(conservative = safe 档 + 仅内置) |
@@ -840,8 +840,8 @@ JSON 块。**Agent 只解析这一块内容,绝不从控制台自由文本中推
 ```text
 winapp2_latest.json        # Winapp2.ini v260730(14,117 条,CC-BY-SA-4.0)
 community_cleaners.json    # BleachBit cleaners Windows 路径(986 条,GPL-3.0+)
-rules_*.json               # c_cleaner_plus 精选集(ai / cn / dev / design / game / media / mobile)
-cdisk_cleaner_*.json       # c_cleaner_plus 自定义规则 + 应用勾选状态
+rules_*.json               # 精选社区规则集(ai / cn / dev / design / game / media / mobile)
+cdisk_cleaner_*.json       # 社区自定义规则 + 应用勾选状态
 ```
 
 **确定性合并管线**依次经过:发现 → 解析 → 规范化(环境变量形式)→ 去重(保守档优先)→
@@ -907,11 +907,12 @@ cdisk_cleaner_*.json       # c_cleaner_plus 自定义规则 + 应用勾选状态
 win-c-clear-skill/
 ├── SKILL.md                  # Agent 入口:工作流 + 红线
 ├── reference.md              # 确认协议细则(按需加载)
+├── CHANGELOG.md              # 版本发布记录(Keep a Changelog + SemVer)
 ├── scripts/                  # Invoke-CDriveCleanup.ps1(引擎)+ .bat 入口 + C# 扫描器
 ├── config/                   # targets.json(可编辑)+ 生成的合并/缓存文件
 ├── assets/rules/             # 内置社区规则数据(约 1.54 万条)
-├── references/               # 深度文档(guardrails / merging / windows-api …)
-├── tools/                    # 安装器 + 测试套件 + 规则刷新 + 还原工具
+├── references/               # 深度文档 + 审计报告快照(guardrails / merging / windows-api …)
+├── tools/                    # 安装器 + 测试套件 + 规则刷新 + 还原工具(含 tools/audit/ 审计探针)
 └── .github/                  # CI 工作流 + issue/PR 模板
 ```
 
@@ -921,6 +922,7 @@ win-c-clear-skill/
 |------|------|
 | [SKILL.md](SKILL.md) | Agent 视角的技能入口,记录工作流与三条红线 |
 | [reference.md](reference.md) | 确认协议与红线的实施细则,按需加载 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本发布记录 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献指南 + 测试套件使用方式 |
 | [SECURITY.md](SECURITY.md) | 面向 Agent 的安全政策(漏洞上报 + 安全边界) |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | 社区行为准则 |
@@ -976,13 +978,17 @@ win-c-clear-skill/
 
 | # | 防线 | 拦截什么 |
 |---|------|----------|
-| 0 | Plan 门禁(exit 4) | 跳过扫描直接清理 / 计划超过 30 分钟未使用 |
-| 1 | 扫描范围围栏 | 扫描行为闯入系统核心区域(白名单 + 黑名单双重过滤) |
+| 0 | Plan 门禁(exit 4) | 跳过扫描直接清理 / 计划超过 30 分钟未使用 / **清理目标不在已扫描的计划范围内** |
+| 1 | 扫描范围围栏 | 扫描行为闯入系统核心区域(白名单 + 黑名单双重过滤,**逐路径**判定) |
 | 2 | 白名单强制 | 通过裸路径或编造 id 指定白名单之外的目标 |
-| 3 | 受保护路径黑名单 | 合并期降级为 dangerous + 禁用;删除期二次断言拦截 |
-| 4 | 热文件围栏 | 删除最近 30 分钟内仍在修改的"使用中"文件 |
+| 3 | 受保护路径黑名单 | 合并期降级为 dangerous + 禁用;删除期二次断言拦截;合并末尾不变量清扫兜底 |
+| 4 | 热文件围栏 | 删除最近 30 分钟内仍在修改的"使用中"文件(仅顶层子项自身 mtime) |
 | 5 | 危险扩展名围栏 | 非内置目标的 exe / dll / sys / msi 在永久模式下跳过 |
-| 6 | RM 锁上报 + 审计日志 | 盲删被锁文件;每一次行为全程留痕、可审计 |
+| 6 | 重解析点围栏 | 穿透 junction / symlink 删除链接目标的数据(常在另一块盘上) |
+| 7 | RM 锁上报 + 审计日志 | 盲删被锁文件;每一次行为全程留痕、可审计 |
+
+此外:`-Mode Clean` 禁止与只读审计档 `-ScanMode diagnostic` 组合(exit 3);
+`-Ids` / `-ConfirmIds` 与路径类参数拒绝可用于提权子进程命令行注入的字符(exit 3)。
 
 完整规格见 [references/guardrails.md](references/guardrails.md)(Agent 向深度文档)。
 
@@ -994,8 +1000,9 @@ win-c-clear-skill/
 在真实机器上删除文件,所有变更均执行高安全标准,且必须通过以下测试套件:
 
 ```powershell
-tools\verify_safety.ps1            # 护栏、分级、契约、回归测试
+tools\verify_safety.ps1            # 护栏、分级、契约、unknown-id 回归
 tools\verify-engine.ps1            # 语法 + C# 扫描器编译 + 黑名单正则
+tools\test-regression.ps1          # glob 作用域、重解析点围栏、计划范围绑定、注入防护
 python tools\test-scan-lists.py    # 白名单 / 黑名单语义
 ```
 

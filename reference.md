@@ -14,7 +14,8 @@ Console output is English for encoding stability; all user-facing replies use th
    without explicit per-path user request.
 5. **Prefer migrate / junction / official uninstall** over recursive delete for install trees
    (TeX Live, IDEs, game launchers).
-6. **Never upload** any file, scan result, or log to the network. Logs stay local (Desktop).
+6. **Never upload** any file, scan result, or log to the network. Logs stay local
+   (`<skill-root>\logs\`).
 7. **Never stop processes/services** without separate user confirmation naming the affected apps.
 8. **Never claim success** when items are `need-admin`/`locked`/`error`. Report leftovers truthfully
    with the exact rerun command.
@@ -32,7 +33,9 @@ Console output is English for encoding stability; all user-facing replies use th
 
 Phase 1 — risk disclosure + id recital:
 - Explain in the user's language: what breaks, what data is lost, reversibility (usually none)
-- Offer backup (Desktop backup via `-BackupDangerous`, or copy to another drive) or confirm no backup
+- Offer backup (`-BackupDangerous` writes to `<skill-root>\backups\`, or copy to another drive) or
+  confirm no backup. NOTE: `<skill-root>\backups\` is on the same volume when the skill lives on C:,
+  so it does not free space — for large dangerous targets prefer copying to another drive.
 - Ask the user to **type the exact target id** (e.g. `cursor-state-vscdb`), not just "yes"
 
 Phase 2 — explicit deletion phrase:
@@ -126,10 +129,10 @@ before executing, or for compliance audits.
 | `texlive` | Removes TeX Live; prefer migrate/junction |
 | `hiberfil` | Disables hibernation/fast startup (powercfg /h off), frees 6-20 GB; reversible via `powercfg /h on` |
 | `win-event-logs-security` | Clears Security audit log (wevtutil) — login/privilege forensics trail lost |
-| `windows-old` | Removes previous OS installation (takeown/icacls sequence); rollback impossible; 10-30 GB |
+| `windows-old` | **Blocked by the engine guardrail** (`\windows.old` is a protected path): the target always returns `blocked-by-guardrail` and deletes nothing. Use Disk Cleanup (cleanmgr) → "Previous Windows installation(s)" or Settings > System > Storage instead |
 | `pagefile-swapfile` | **ADVISORY-ONLY**: never deleted; engine returns `status:"advisory"` with sysdm.cpl instructions even after two-phase confirmation |
 
-Merged c_cleaner_plus entries classified dangerous (file-type entries, backup/data/cookie/session
+Merged community entries classified dangerous (file-type entries, backup/data/cookie/session
 paths, unknown semantics) are likewise disabled until the user completes the protocol.
 Protected system paths (WinSxS, Installer, NTUSER.DAT, pagefile.sys...) are additionally demoted
 and blocked by the engine guardrail — see [references/guardrails.md](references/guardrails.md).
